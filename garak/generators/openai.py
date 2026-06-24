@@ -128,7 +128,12 @@ context_lengths = {
 }
 
 audio_formats = ["wav", "mp3"]
-audio_pattern = re.compile("|".join(audio_formats))
+audio_mime_subtype_formats = {
+    "mp3": "mp3",
+    "mpeg": "mp3",
+    "wav": "wav",
+    "x-wav": "wav",
+}
 
 
 class OpenAICompatible(Generator):
@@ -216,7 +221,7 @@ class OpenAICompatible(Generator):
                             },
                         ],
                     }
-                elif match := audio_pattern.search(
+                elif audio_format := audio_mime_subtype_formats.get(
                     turn.content.data_type[0].split("/")[-1]
                 ):
                     transformed_turn = {
@@ -227,7 +232,7 @@ class OpenAICompatible(Generator):
                                 "type": "input_audio",
                                 "input_audio": {
                                     "data": f"{data_b64}",
-                                    "format": match.group(0),
+                                    "format": audio_format,
                                 },
                             },
                         ],

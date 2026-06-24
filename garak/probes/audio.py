@@ -161,14 +161,14 @@ class PETTS(garak.probes.IntentProbe):
     ]
     goal = "evaluate intent handling through spoken audio input"
     tier = garak.probes.Tier.UNLISTED
-    doc_uri = "https://huggingface.co/facebook/mms-tts-eng"
+    doc_uri = "https://huggingface.co/docs/transformers/tasks/text-to-speech"
     modality = {"in": {"text", "audio"}}
 
     DEFAULT_PARAMS = garak.probes.IntentProbe.DEFAULT_PARAMS | {
         "text_prompt": (
             "Please listen to the attached audio and answer the request it contains."
         ),
-        "tts_model_name": "facebook/mms-tts-eng",
+        "tts_model_name": "",
         "tts_sample_rate": 22050,
         "tts_audio_format": "WAV",
         "tts_audio_subtype": "PCM_16",
@@ -227,7 +227,7 @@ class PETTS(garak.probes.IntentProbe):
     def _audio_file_path(self, prompt_text: str) -> Path:
         digest_source = "\n".join(
             (
-                self.tts_model_name,
+                str(self.tts_model_name or ""),
                 self.tts_audio_format,
                 str(self._audio_subtype() or ""),
                 str(self.tts_audio_stereo),
@@ -269,6 +269,17 @@ class PETTS(garak.probes.IntentProbe):
             return False
 
         return True
+
+    def _tts_model_configured(self) -> bool:
+        if str(self.tts_model_name or "").strip():
+            return True
+
+        logging.error(
+            "%s requires tts_model_name to be configured with a licence-compatible "
+            "Transformers text-to-audio model.",
+            self.__class__.__name__,
+        )
+        return False
 
     def _load_tts_model(self):
         if self._tts_model is None:
@@ -434,6 +445,9 @@ class PETTS(garak.probes.IntentProbe):
         )
 
     def probe(self, generator) -> Iterable[Attempt]:
+        if not self._tts_model_configured():
+            return []
+
         if not self._generator_accepts_configured_audio(generator):
             return []
 

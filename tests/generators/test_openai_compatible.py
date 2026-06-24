@@ -151,3 +151,15 @@ def test_openai_compatible_reports_supported_audio_formats():
     assert (
         OpenAICompatible.supported_formats("image") == set()
     ), "reports no image formats by default"
+
+
+def test_openai_compatible_normalises_mp3_audio_payload(tmp_path):
+    audio_path = tmp_path / "prompt.mp3"
+    audio_path.write_bytes(b"ID3")
+    prompt = Conversation([Turn("user", Message("listen", data_path=str(audio_path)))])
+
+    payload = OpenAICompatible._conversation_to_list(prompt)
+
+    assert (
+        payload[0]["content"][1]["input_audio"]["format"] == "mp3"
+    ), "normalises audio/mpeg MIME subtype to OpenAI's mp3 format"

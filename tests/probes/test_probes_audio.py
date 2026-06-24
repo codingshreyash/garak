@@ -25,7 +25,9 @@ def petts_probe(monkeypatch, tmp_path) -> garak.probes.audio.PETTS:
     monkeypatch.setattr(_config.transient, "report_filename", temp_report_file.name)
     monkeypatch.setattr(garak.probes.audio, "_spoken_prompt_candidate", lambda _: True)
     garak.services.intentservice.load()
-    yield garak.probes.audio.PETTS()
+    probe = garak.probes.audio.PETTS()
+    probe.tts_model_name = "test-tts-model"
+    yield probe
     temp_report_file.close()
 
 
@@ -108,6 +110,14 @@ def test_petts_probe_skips_incompatible_audio_format(petts_probe, monkeypatch):
     petts_probe.tts_audio_format = "WAV"
 
     assert petts_probe.probe(generator) == [], "skips unsupported audio format"
+
+
+def test_petts_probe_requires_configured_tts_model(petts_probe, monkeypatch):
+    generator = _plugins.load_plugin("generators.test.Repeat")
+    monkeypatch.setattr(generator, "modality", {"in": {"text", "audio"}})
+    petts_probe.tts_model_name = ""
+
+    assert petts_probe.probe(generator) == [], "skips when no TTS model is configured"
 
 
 def test_petts_reads_generator_audio_format_interface(petts_probe):
