@@ -19,6 +19,7 @@ For detailed information on detector metrics and evaluation, see :doc:`../detect
    detectors/any
    detectors/ansiescape
    detectors/apikey
+   detectors/audio
    detectors/continuation
    detectors/dan
    detectors/divergence
