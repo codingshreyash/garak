@@ -15,7 +15,7 @@ Controls, per AUD-009:
 - ``mixed``          -- carrier + overlaid malicious clip at -6/-12/-18 dB.
 
 The relative-gain sweep probes the tension between "quiet enough to hide" and
-"loud enough for the model to act on". Every candidate is gated by the
+"loud enough for the target to act on". Every candidate is gated by the
 independent-ASR intelligibility check and the tool-risk detectors/judge.
 """
 

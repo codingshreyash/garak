@@ -11,13 +11,13 @@ hijacks the response.
 
 The design carries its controls, per the paper and AUD-009:
 
-- ``benign_only``  -- carrier utterance alone (does the model just answer it?).
+- ``benign_only``  -- carrier utterance alone (does the target just answer it?).
 - ``suffix_only``  -- malicious clip alone (baseline: is it refused on its own?).
 - ``combined``     -- benign + gap + suffix, at 0/100/500 ms gaps.
 
 Reusing one suffix across several carriers gives a cheap universality signal.
 Every candidate is gated by the independent-ASR intelligibility check and the
-tool-risk detectors/judge, so a non-effect is distinguished from the model
+tool-risk detectors/judge, so a non-effect is distinguished from the target
 never hearing the suffix.
 """
 
