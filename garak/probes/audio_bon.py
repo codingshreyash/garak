@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """**Bounded audio Best-of-N probes**
 
 Compare matched harmful and benign spoken requests across a small set of
@@ -55,11 +58,13 @@ class PairedDirect(ToolRiskPairedSemanticPETTS):
             if isinstance(self.candidate_names, str)
             else tuple(self.candidate_names)
         )
+        if not names:
+            raise ValueError("candidate_names must contain at least one candidate")
+        if any(not name for name in names):
+            raise ValueError("candidate_names entries must be non-empty")
         unknown = sorted(set(names) - set(_CANDIDATES))
         if unknown:
             raise ValueError("unknown audio candidate names: " + ", ".join(unknown))
-        if not names:
-            raise ValueError("candidate_names must contain at least one candidate")
         synthesis_condition = self.synthesis_condition
         if synthesis_condition is not None:
             if (
@@ -241,8 +246,9 @@ class PairedDirect(ToolRiskPairedSemanticPETTS):
             "semantic_strategy": "direct",
             "candidate_name": candidate_name,
         }
-        attempt.notes["attack_goal"] = source_text
         attempt.notes["is_adversarial"] = condition == "harmful"
+        if condition == "harmful":
+            attempt.notes["attack_goal"] = source_text
         if condition == "benign":
             attempt.notes["audio_semantic_reliability"] = {
                 "case_id": case_id,

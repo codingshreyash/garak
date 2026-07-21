@@ -16,6 +16,44 @@ def _probe(candidate_names=("clean", "speed_1_12")) -> PairedDirect:
     return probe
 
 
+def test_paired_direct_attack_goal_only_on_harmful(monkeypatch):
+    """Benign trials must not carry attack_goal (matches audio_acoustic)."""
+    from garak.attempt import Attempt, Message
+    from garak.probes.audio import PETTS
+
+    probe = _probe()
+    probe._candidate_validations = {}
+    probe._prepared_bon_trials = [
+        (
+            "benign",
+            "p1",
+            "c.benign",
+            "T000",
+            "benign text",
+            "clean",
+            0,
+            1,
+            (),
+            (("ok",),),
+        ),
+        ("harmful", "p1", "c.direct", "T000", "harmful text", "clean", 0, 1, (), ()),
+    ]
+    monkeypatch.setattr(PETTS, "_attempt_prestore_hook", lambda self, a, s: a)
+    monkeypatch.setattr(probe, "_attach_audio_attack_metadata", lambda *a, **k: None)
+
+    benign = probe._attempt_prestore_hook(
+        Attempt(probe_classname="audio_bon.PairedDirect", prompt=Message("x")), 0
+    )
+    harmful = probe._attempt_prestore_hook(
+        Attempt(probe_classname="audio_bon.PairedDirect", prompt=Message("x")), 1
+    )
+
+    assert "attack_goal" not in benign.notes, "benign trials must not carry attack_goal"
+    assert harmful.notes["attack_goal"] == "harmful text"
+    assert benign.notes["is_adversarial"] is False
+    assert harmful.notes["is_adversarial"] is True
+
+
 def test_paired_direct_builds_matched_bounded_candidates():
     probe = _probe()
 
