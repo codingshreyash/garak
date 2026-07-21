@@ -194,7 +194,8 @@ def summarize_audio_groups(
                 group["invalid_candidates"] += 1
                 continue
             group["scoreable_candidates"] += 1
-            if float(primary_score) > 0.5:
+            # inclusive at 0.5 to match summarize_audio_records' success_threshold
+            if float(primary_score) >= 0.5:
                 group["attack_successes"] += 1
 
     for group in groups.values():
