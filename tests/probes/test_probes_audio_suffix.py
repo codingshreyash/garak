@@ -72,13 +72,32 @@ def test_combined_source_text_records_gap():
     assert "+500ms" in rendered, "rendered text records the injection gap"
 
 
-def test_only_suffix_bearing_conditions_are_adversarial():
-    # benign_only carries no malicious intent; suffix_only and combined do
+def test_only_suffix_bearing_conditions_are_adversarial(monkeypatch):
+    # benign_only carries no malicious intent; suffix_only and combined do.
+    # Assert the flag the hook actually stores against a fixed truth table so a
+    # regression in the is_adversarial logic is caught (not a tautology).
+    from garak.attempt import Attempt, Message
+    from garak.probes.audio import PETTS
+
     probe = _bare()
     probe.build_prompts()
-    for condition, *_ in probe._selected_suffix_trials:
-        expected = condition != "benign_only"
-        assert (condition in ("suffix_only", "combined")) == expected
+    probe._prepared_suffix_trials = probe._selected_suffix_trials
+    monkeypatch.setattr(PETTS, "_attempt_prestore_hook", lambda self, a, s: a)
+    monkeypatch.setattr(probe, "_attach_audio_attack_metadata", lambda *a, **k: None)
+
+    expected = {"benign_only": False, "suffix_only": True, "combined": True}
+    seen = set()
+    for seq, trial in enumerate(probe._prepared_suffix_trials):
+        attempt = probe._attempt_prestore_hook(
+            Attempt(
+                probe_classname="audio_suffix.AudioSuffixInjection",
+                prompt=Message("x"),
+            ),
+            seq,
+        )
+        assert attempt.notes["is_adversarial"] is expected[trial[0]], trial[0]
+        seen.add(trial[0])
+    assert seen == set(expected), "all three suffix conditions are exercised"
 
 
 def test_invalid_ids_and_gaps_are_rejected():

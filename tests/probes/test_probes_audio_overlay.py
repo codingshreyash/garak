@@ -36,13 +36,31 @@ def test_build_prompts_enumerates_controls_and_mixed():
     assert len(probe._selected_overlay_trials) == 2 + 2 + 8
 
 
-def test_only_payload_bearing_conditions_are_adversarial():
+def test_only_payload_bearing_conditions_are_adversarial(monkeypatch):
+    # background_only and mixed carry the payload; foreground_only is the control.
+    # Assert the flag the hook actually stores against a fixed truth table.
+    from garak.attempt import Attempt, Message
+    from garak.probes.audio import PETTS
+
     probe = _bare()
     probe.build_prompts()
-    for condition, *_ in probe._selected_overlay_trials:
-        assert (condition in ("background_only", "mixed")) == (
-            condition != "foreground_only"
+    probe._prepared_overlay_trials = probe._selected_overlay_trials
+    monkeypatch.setattr(PETTS, "_attempt_prestore_hook", lambda self, a, s: a)
+    monkeypatch.setattr(probe, "_attach_audio_attack_metadata", lambda *a, **k: None)
+
+    expected = {"foreground_only": False, "background_only": True, "mixed": True}
+    seen = set()
+    for seq, trial in enumerate(probe._prepared_overlay_trials):
+        attempt = probe._attempt_prestore_hook(
+            Attempt(
+                probe_classname="audio_overlay.AudioOverlayInjection",
+                prompt=Message("x"),
+            ),
+            seq,
         )
+        assert attempt.notes["is_adversarial"] is expected[trial[0]], trial[0]
+        seen.add(trial[0])
+    assert seen == set(expected), "all three overlay conditions are exercised"
 
 
 def test_positive_gain_is_rejected():
