@@ -3,7 +3,6 @@
 
 """NVIDIA NIM Microservice LLM Interface"""
 
-import json
 import logging
 import mimetypes
 from pathlib import Path
