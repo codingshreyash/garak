@@ -225,12 +225,12 @@ class NVVoiceChat(Generator):
     audio_formats = {"wav"}
 
     def __init__(self, name="", config_root=_config):
-        super().__init__(name, config_root=config_root)
-        if self.name in ("", None):
+        if not name:
             raise ValueError(
                 f"{self.generator_family_name} requires model name to be set, "
                 "e.g. --target_name <model-served-by-the-shim>"
             )
+        super().__init__(name, config_root=config_root)
 
     def _completions_url(self) -> str:
         return f"{self.uri.rstrip('/')}/chat/completions"
