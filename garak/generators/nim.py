@@ -199,7 +199,6 @@ class NVVoiceChat(Generator):
     """
 
     ENV_VAR = "NIM_API_KEY"
-    DEFAULT_MODEL = "audio-chat"
     DEFAULT_PARAMS = Generator.DEFAULT_PARAMS | {
         "uri": "https://integrate.api.nvidia.com/v1",
         "audio_format": "wav",
@@ -226,7 +225,12 @@ class NVVoiceChat(Generator):
     audio_formats = {"wav"}
 
     def __init__(self, name="", config_root=_config):
-        super().__init__(name or self.DEFAULT_MODEL, config_root=config_root)
+        super().__init__(name, config_root=config_root)
+        if self.name in ("", None):
+            raise ValueError(
+                f"{self.generator_family_name} requires model name to be set, "
+                "e.g. --target_name <model-served-by-the-shim>"
+            )
 
     def _completions_url(self) -> str:
         return f"{self.uri.rstrip('/')}/chat/completions"
