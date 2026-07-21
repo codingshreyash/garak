@@ -159,6 +159,23 @@ def test_candidate_validation_accepts_required_competing_phrases(tmp_path):
     ), "manifest records phrase-coverage validation"
 
 
+def test_candidate_validation_requires_whole_word_phrase_match(tmp_path):
+    """A required phrase must not be satisfied by a longer word that contains it."""
+    path = tmp_path / "candidate.wav"
+    _write_wav(path)
+    record = _record(path) | {"required_transcript_phrases": ["ignore"]}
+
+    result = validate_candidate(
+        record,
+        transcriber=lambda _: Transcript("The request was ignored entirely.", "asr"),
+    )
+
+    assert (
+        result["validation"]["scoreable"] is False
+    ), "'ignored' must not satisfy the required phrase 'ignore'"
+    assert "ignore" in result["validation"]["missing_transcript_phrases"]
+
+
 def test_candidate_validation_records_asr_failure(tmp_path):
     path = tmp_path / "candidate.wav"
     _write_wav(path)

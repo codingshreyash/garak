@@ -377,11 +377,13 @@ def validate_candidate(
                 "transcript": transcript_record,
                 "validation": validation,
             }
-        transcript_tokens = " ".join(normalized_words(transcript.text))
+        # pad with spaces so phrases match on whole-word boundaries -- otherwise
+        # a required "ignore" would be satisfied by the transcript word "ignored"
+        padded_transcript = f" {' '.join(normalized_words(transcript.text))} "
         missing_phrases = [
             phrase
             for phrase in required_phrases
-            if " ".join(normalized_words(phrase)) not in transcript_tokens
+            if f" {' '.join(normalized_words(phrase))} " not in padded_transcript
         ]
         passed = not missing_phrases
         validation |= {
