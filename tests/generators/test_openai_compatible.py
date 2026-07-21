@@ -11,7 +11,7 @@ import inspect
 from collections.abc import Iterable
 
 from garak.attempt import Message, Turn, Conversation
-from garak.generators.openai import OpenAICompatible
+from garak.generators.openai import OpenAIAudioCompatible, OpenAICompatible
 from garak.generators.rest import RestGenerator
 
 # TODO: expand this when we have faster loading, currently to process all generator costs 30s for 3 tests
@@ -141,3 +141,39 @@ def test_openai_multiple_generations():
     assert (
         oai_klass.supports_multiple_generations == True
     ), "OpenAI access expected to correctly support multiple generations by default"
+
+
+def test_openai_compatible_reports_supported_audio_formats():
+    assert OpenAICompatible.supported_formats("audio") == {
+        "wav",
+        "mp3",
+    }, "reports audio formats through the generator format interface"
+    assert (
+        OpenAICompatible.supported_formats("image") == set()
+    ), "reports no image formats by default"
+
+
+def test_openai_audio_compatible_declares_audio_modality():
+    assert OpenAICompatible.modality["in"] == {
+        "text"
+    }, "generic compatible targets remain text-only at the harness boundary"
+    assert OpenAIAudioCompatible.modality["in"] == {
+        "text",
+        "audio",
+    }, "explicit audio-compatible targets accept text plus audio"
+    assert OpenAIAudioCompatible.supported_formats("audio") == {
+        "wav",
+        "mp3",
+    }, "audio-compatible targets inherit supported wire formats"
+
+
+def test_openai_compatible_normalises_mp3_audio_payload(tmp_path):
+    audio_path = tmp_path / "prompt.mp3"
+    audio_path.write_bytes(b"ID3")
+    prompt = Conversation([Turn("user", Message("listen", data_path=str(audio_path)))])
+
+    payload = OpenAICompatible._conversation_to_list(prompt)
+
+    assert (
+        payload[0]["content"][1]["input_audio"]["format"] == "mp3"
+    ), "normalises audio/mpeg MIME subtype to OpenAI's mp3 format"
