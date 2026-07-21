@@ -165,23 +165,24 @@ class NVAudioTranscription(Generator):
 
 
 class NVVoiceChat(Generator):
-    """Wrapper for NVIDIA Nemotron VoiceChat via an OpenAI-compatible shim.
+    """Speech-to-speech target via an OpenAI-compatible chat-completions shim.
 
     Connects to a ``/v1/chat/completions`` endpoint that accepts base64-encoded
     WAV audio and returns a text transcript (and optionally a WAV audio reply).
 
-    Compatible with any ``nemotron-voicechat-shim``-style proxy.  Point ``uri``
-    at the shim's ``/v1`` base URL and set ``NIM_API_KEY`` (leave it blank if
-    the endpoint requires no authentication).
+    Works against any OpenAI-compatible proxy that accepts ``input_audio``
+    content.  Point ``uri`` at the shim's ``/v1`` base URL, set ``--target_name``
+    to the model the shim serves, and set ``NIM_API_KEY`` (leave it blank if the
+    endpoint requires no authentication).
 
-    The target requires trailing silence at the end of the audio so that it has
-    time to finish its response before the stream closes.  ``trailing_silence_ms``
+    Some targets need trailing silence at the end of the audio so they have time
+    to finish the response before the stream closes.  ``trailing_silence_ms``
     controls how much is appended; set to 0 to disable.
 
     Request payload shape::
 
         {
-          "model": "nemotron-voice-chat",
+          "model": "<model-name>",
           "messages": [{
             "role": "user",
             "content": [{
@@ -198,7 +199,7 @@ class NVVoiceChat(Generator):
     """
 
     ENV_VAR = "NIM_API_KEY"
-    DEFAULT_MODEL = "nemotron-voice-chat"
+    DEFAULT_MODEL = "audio-chat"
     DEFAULT_PARAMS = Generator.DEFAULT_PARAMS | {
         "uri": "https://integrate.api.nvidia.com/v1",
         "audio_format": "wav",

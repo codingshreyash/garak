@@ -267,7 +267,7 @@ def test_nv_voice_chat_posts_audio_file(monkeypatch, tmp_path):
     req = captured[0]
     assert req["url"] == "https://shim.nvcf.nvidia.com/v1/chat/completions"
     assert req["headers"]["Authorization"] == "Bearer test-key"
-    assert req["json"]["model"] == "nemotron-voice-chat"
+    assert req["json"]["model"] == "audio-chat"
     assert req["json"]["generate_audio"] is True
     content = req["json"]["messages"][0]["content"]
     assert content[0] == {
@@ -285,7 +285,7 @@ def test_nv_voice_chat_preserves_sanitised_response_provenance(monkeypatch, tmp_
     response = _VCFakeResponse(
         payload={
             "id": "completion-one",
-            "model": "nemotron-voice-chat",
+            "model": "audio-chat",
             "choices": [
                 {
                     "message": {
