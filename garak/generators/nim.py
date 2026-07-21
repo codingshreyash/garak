@@ -3,9 +3,12 @@
 
 """NVIDIA NIM Microservice LLM Interface"""
 
+import hashlib
+import json
 import logging
 import mimetypes
 from pathlib import Path
+import time
 from typing import List, Union
 
 import openai
@@ -157,6 +160,370 @@ class NVAudioTranscription(Generator):
             Message(
                 text=response_json["text"],
                 lang=response_json.get("language_code", self.language),
+            )
+        ]
+
+
+class NVVoiceChat(Generator):
+    """Wrapper for NVIDIA Nemotron VoiceChat via an OpenAI-compatible shim.
+
+    Connects to a ``/v1/chat/completions`` endpoint that accepts base64-encoded
+    WAV audio and returns a text transcript (and optionally a WAV audio reply).
+
+    Compatible with any ``nemotron-voicechat-shim``-style proxy.  Point ``uri``
+    at the shim's ``/v1`` base URL and set ``NIM_API_KEY`` (leave it blank if
+    the endpoint requires no authentication).
+
+    The model requires trailing silence at the end of the audio so that it has
+    time to finish its response before the stream closes.  ``trailing_silence_ms``
+    (default 2000 ms) controls how much is appended; set to 0 to disable.
+
+    Request payload shape::
+
+        {
+          "model": "nemotron-voice-chat",
+          "messages": [{
+            "role": "user",
+            "content": [{
+              "type": "input_audio",
+              "input_audio": {"data": "<base64-wav>", "format": "wav"}
+            }]
+          }],
+          "generate_audio": true
+        }
+
+    The text reply is taken from ``choices[0].message.content``; the audio
+    reply (base64 WAV) is available in ``choices[0].message.audio.data`` but
+    is not surfaced by default.
+    """
+
+    ENV_VAR = "NIM_API_KEY"
+    DEFAULT_MODEL = "nemotron-voice-chat"
+    DEFAULT_PARAMS = Generator.DEFAULT_PARAMS | {
+        "uri": "https://integrate.api.nvidia.com/v1",
+        "audio_format": "wav",
+        "generate_audio": True,
+        "request_timeout": 120,
+        "request_retries": 0,
+        "retry_delay_seconds": 5.0,
+        "retry_max_delay_seconds": 30.0,
+        "retry_status_codes": (500, 502, 503, 504),
+        "max_audio_bytes": 25_000_000,
+        "trailing_silence_ms": 2000,
+        "system_prompt": None,
+        "text_prompt": None,
+        "tools": None,
+        "tool_choice": None,
+        "extra_body": {},
+        "extra_headers": {},
+        "response_audio_dir": None,
+    }
+    active = True
+    supports_multiple_generations = False
+    generator_family_name = "NVVoiceChat"
+    modality = {"in": {"audio", "text"}, "out": {"text"}}
+    audio_formats = {"wav"}
+
+    def __init__(self, name="", config_root=_config):
+        super().__init__(name or self.DEFAULT_MODEL, config_root=config_root)
+
+    def _completions_url(self) -> str:
+        return f"{self.uri.rstrip('/')}/chat/completions"
+
+    def _post_completion(self, *, headers: dict, payload: dict):
+        retries = int(self.request_retries)
+        if retries < 0:
+            raise GarakException(
+                f"{self.__class__.__name__} request_retries must not be negative."
+            )
+        retry_status_codes = {int(code) for code in self.retry_status_codes}
+        for request_index in range(retries + 1):
+            try:
+                response = requests.post(
+                    self._completions_url(),
+                    headers=headers,
+                    json=payload,
+                    timeout=self.request_timeout,
+                )
+                response.raise_for_status()
+                return response
+            except requests.exceptions.RequestException as exc:
+                status_code = (
+                    exc.response.status_code if exc.response is not None else None
+                )
+                retryable = status_code in retry_status_codes or isinstance(
+                    exc,
+                    (
+                        requests.exceptions.ConnectionError,
+                        requests.exceptions.Timeout,
+                    ),
+                )
+                if not retryable or request_index >= retries:
+                    raise GarakException(
+                        f"{self.__class__.__name__} request failed."
+                    ) from exc
+                delay = min(
+                    float(self.retry_delay_seconds) * (2**request_index),
+                    float(self.retry_max_delay_seconds),
+                )
+                logging.warning(
+                    "%s transient request failure%s; retrying %s/%s in %.1fs.",
+                    self.__class__.__name__,
+                    f" with HTTP {status_code}" if status_code is not None else "",
+                    request_index + 1,
+                    retries,
+                    delay,
+                )
+                time.sleep(delay)
+
+        raise GarakException(f"{self.__class__.__name__} request failed.")
+
+    def _audio_message(self, prompt: Conversation) -> Message:
+        if not isinstance(prompt, Conversation):
+            raise GarakException(
+                f"{self.__class__.__name__} expected a Conversation prompt."
+            )
+        for turn in reversed(prompt.turns):
+            msg = turn.content
+            if msg.data_path is not None or msg.data is not None:
+                return msg
+        raise GarakException(
+            f"{self.__class__.__name__} expected a prompt containing audio data."
+        )
+
+    @staticmethod
+    def _response_provenance(response, response_json: dict, response_message: dict):
+        response_headers = getattr(response, "headers", {})
+        identifiers = (
+            {
+                key: value
+                for key, value in response_headers.items()
+                if any(
+                    marker in key.lower()
+                    for marker in ("request-id", "reqid", "trace", "correlation")
+                )
+            }
+            if hasattr(response_headers, "items")
+            else {}
+        )
+        audio = response_message.get("audio")
+        provenance = {
+            "http_status": getattr(response, "status_code", None),
+            "response_identifiers": identifiers,
+            "audio_present": isinstance(audio, dict) and bool(audio.get("data")),
+        }
+        for key in ("id", "model", "created", "system_fingerprint"):
+            if key in response_json:
+                provenance[key] = response_json[key]
+        if isinstance(response_json.get("usage"), dict):
+            provenance["usage"] = response_json["usage"]
+        return provenance
+
+    def _save_response_audio(self, response_message: dict) -> dict:
+        if self.response_audio_dir is None:
+            return {}
+
+        audio = response_message.get("audio")
+        encoded_audio = audio.get("data") if isinstance(audio, dict) else None
+        if not isinstance(encoded_audio, str) or not encoded_audio:
+            raise GarakException(
+                f"{self.__class__.__name__} response omitted requested audio."
+            )
+
+        import base64
+        import binascii
+
+        try:
+            audio_bytes = base64.b64decode(encoded_audio, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise GarakException(
+                f"{self.__class__.__name__} response audio was not valid base64."
+            ) from exc
+        if not (audio_bytes.startswith(b"RIFF") and audio_bytes[8:12] == b"WAVE"):
+            raise GarakException(
+                f"{self.__class__.__name__} response audio was not a WAV file."
+            )
+
+        digest = hashlib.sha256(audio_bytes, usedforsecurity=False).hexdigest()
+        output_dir = Path(self.response_audio_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / f"voicechat-response-{digest[:16]}.wav"
+        if not output_path.exists():
+            output_path.write_bytes(audio_bytes)
+        return {
+            "audio_path": str(output_path),
+            "audio_sha256": digest,
+            "audio_byte_size": len(audio_bytes),
+        }
+
+    @staticmethod
+    def _append_wav_silence(wav_bytes: bytes, silence_ms: int) -> bytes:
+        """Return wav_bytes with silence_ms milliseconds of silence appended."""
+        import io
+        import wave
+
+        with wave.open(io.BytesIO(wav_bytes)) as wf:
+            params = wf.getparams()
+            original_frames = wf.readframes(wf.getnframes())
+
+        silence_frames = int(params.framerate * silence_ms / 1000)
+        silence_bytes = b"\x00" * silence_frames * params.nchannels * params.sampwidth
+
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf_out:
+            wf_out.setparams(params)
+            wf_out.writeframes(original_frames + silence_bytes)
+        return buf.getvalue()
+
+    def _call_model(
+        self, prompt: Conversation, generations_this_call: int = 1
+    ) -> List[Union[Message, None]]:
+        import base64
+        import wave
+
+        assert (
+            generations_this_call == 1
+        ), "generations_per_call / n > 1 is not supported"
+
+        message = self._audio_message(prompt)
+        if message.data_path is not None:
+            audio_path = Path(message.data_path)
+            if not audio_path.is_file():
+                raise GarakException(
+                    f"{self.__class__.__name__} audio file not found: {audio_path}"
+                )
+            audio_format = audio_path.suffix.lower().lstrip(".")
+            if audio_format not in self.audio_formats:
+                raise GarakException(
+                    f"{self.__class__.__name__} expected one of "
+                    f"{sorted(self.audio_formats)} audio formats: {audio_path}"
+                )
+            if audio_path.stat().st_size > self.max_audio_bytes:
+                raise GarakException(
+                    f"{self.__class__.__name__} audio file exceeds "
+                    f"{self.max_audio_bytes} bytes: {audio_path}"
+                )
+            raw = audio_path.read_bytes()
+        else:
+            raw = message.data
+
+        if len(raw) > self.max_audio_bytes:
+            raise GarakException(
+                f"{self.__class__.__name__} audio data exceeds "
+                f"{self.max_audio_bytes} bytes."
+            )
+
+        if self.trailing_silence_ms > 0:
+            try:
+                raw = self._append_wav_silence(raw, self.trailing_silence_ms)
+            except (wave.Error, EOFError) as exc:
+                raise GarakException(
+                    f"{self.__class__.__name__} could not parse audio as WAV "
+                    f"to append trailing silence."
+                ) from exc
+            if len(raw) > self.max_audio_bytes:
+                raise GarakException(
+                    f"{self.__class__.__name__} audio data exceeds "
+                    f"{self.max_audio_bytes} bytes after appending trailing silence."
+                )
+
+        audio_b64 = base64.b64encode(raw).decode()
+        messages = []
+        if self.system_prompt:
+            if not isinstance(self.system_prompt, str):
+                raise GarakException(
+                    f"{self.__class__.__name__} system_prompt must be a string."
+                )
+            messages.append({"role": "system", "content": self.system_prompt})
+
+        user_content = []
+        effective_text_prompt = (
+            self.text_prompt if self.text_prompt is not None else message.text
+        )
+        if effective_text_prompt:
+            if not isinstance(effective_text_prompt, str):
+                raise GarakException(
+                    f"{self.__class__.__name__} text_prompt must be a string."
+                )
+            user_content.append({"type": "text", "text": effective_text_prompt})
+        user_content.append(
+            {
+                "type": "input_audio",
+                "input_audio": {
+                    "data": audio_b64,
+                    "format": self.audio_format,
+                },
+            }
+        )
+        messages.append({"role": "user", "content": user_content})
+
+        payload = {
+            "model": self.name,
+            "messages": messages,
+            "generate_audio": self.generate_audio,
+        }
+        if self.extra_body:
+            if not isinstance(self.extra_body, dict):
+                raise GarakException(
+                    f"{self.__class__.__name__} extra_body must be a dictionary."
+                )
+            payload.update(self.extra_body)
+        if self.tools is not None:
+            payload["tools"] = self.tools
+        if self.tool_choice is not None:
+            payload["tool_choice"] = self.tool_choice
+
+        headers = {"Content-Type": "application/json"}
+        if self.extra_headers:
+            if not isinstance(self.extra_headers, dict):
+                raise GarakException(
+                    f"{self.__class__.__name__} extra_headers must be a dictionary."
+                )
+            headers.update(self.extra_headers)
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        try:
+            response = self._post_completion(headers=headers, payload=payload)
+            response_json = response.json()
+        except ValueError as exc:
+            raise GarakException(
+                f"{self.__class__.__name__} response was not JSON."
+            ) from exc
+
+        try:
+            response_message = response_json["choices"][0]["message"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise GarakException(
+                f"{self.__class__.__name__} response missing expected fields."
+            ) from exc
+
+        if "content" not in response_message and "tool_calls" not in response_message:
+            raise GarakException(
+                f"{self.__class__.__name__} response missing expected fields."
+            )
+
+        tool_calls = response_message.get("tool_calls")
+        text = response_message.get("content")
+        if tool_calls:
+            text_payload = {"tool_calls": tool_calls}
+            if isinstance(text, str) and text:
+                text_payload["content"] = text
+            text = json.dumps(text_payload, sort_keys=True)
+
+        if not isinstance(text, str):
+            raise GarakException(
+                f"{self.__class__.__name__} response content was not a string."
+            )
+
+        provenance = self._response_provenance(
+            response, response_json, response_message
+        )
+        provenance.update(self._save_response_audio(response_message))
+        return [
+            Message(
+                text=text,
+                notes={"nvvoicechat_response": provenance},
             )
         ]
 
