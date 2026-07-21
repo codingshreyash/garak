@@ -13,14 +13,14 @@ from garak.resources.audio.attack import audio_file_metadata, recipe_digest
 
 @dataclass(frozen=True)
 class Waveform:
-    """Normalized audio samples and their sample rate."""
+    """Normalised audio samples and their sample rate."""
 
     samples: object
     sample_rate: int
 
 
 def read_pcm16_wav(path: str | Path) -> Waveform:
-    """Read a mono or stereo 16-bit PCM WAV into normalized samples."""
+    """Read a mono or stereo 16-bit PCM WAV into normalised samples."""
 
     import numpy
 
@@ -41,7 +41,7 @@ def read_pcm16_wav(path: str | Path) -> Waveform:
 
 
 def write_pcm16_wav(path: str | Path, waveform: Waveform) -> None:
-    """Write normalized mono or stereo samples as 16-bit PCM WAV."""
+    """Write normalised mono or stereo samples as 16-bit PCM WAV."""
 
     import numpy
 
