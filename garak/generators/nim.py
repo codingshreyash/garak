@@ -139,8 +139,7 @@ class NVAudioTranscription(Generator):
                     f"{self.__class__.__name__} audio data exceeds "
                     f"{self.max_audio_bytes} bytes."
                 )
-            # validate raw bytes against audio_formats too (via the mime the
-            # message carries) rather than blindly labelling everything as WAV
+            # validate raw bytes via the mime the message carries
             mime_type = (message.data_type or (None, None))[0] or "audio/wav"
             audio_format = mime_type.split("/")[-1]
             if audio_format == "x-wav":

@@ -133,9 +133,7 @@ audio_mime_subtype_formats = {
     "wav": "wav",
     "x-wav": "wav",
 }
-# the formats we can actually convert are the distinct target values above;
-# derive audio_formats from them so supported_formats() cannot advertise a
-# format that _conversation_to_list is unable to send
+# the formats we can send are the mime-map's target values
 audio_formats = set(audio_mime_subtype_formats.values())
 
 
