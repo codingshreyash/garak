@@ -3,15 +3,153 @@
 
 """NVIDIA NIM Microservice LLM Interface"""
 
+import json
 import logging
+import mimetypes
+from pathlib import Path
 from typing import List, Union
 
 import openai
+import requests
 
 from garak import _config
 from garak.attempt import Message, Turn, Conversation
 from garak.exception import GarakException
+from garak.generators.base import Generator
 from garak.generators.openai import OpenAICompatible
+
+
+class NVAudioTranscription(Generator):
+    """Wrapper for NVIDIA hosted audio transcription endpoints.
+
+    Connects to ``/v1/audio/{model}/transcriptions`` and returns the
+    transcribed text. This supports audio-in, text-out targets such as
+    Parakeet ASR endpoints on NVIDIA's inference API.
+
+    You must set the ``NIM_API_KEY`` environment variable. Run garak with
+    ``--target_type nim.NVAudioTranscription`` and optionally set
+    ``--target_name`` to the NVIDIA audio transcription endpoint name.
+    """
+
+    ENV_VAR = "NIM_API_KEY"
+    DEFAULT_MODEL = "nvidia/parakeet-1-1b-rnnt-multilingual"
+    DEFAULT_PARAMS = Generator.DEFAULT_PARAMS | {
+        "uri": "https://inference-api.nvidia.com/v1",
+        "language": "en-US",
+        "request_timeout": 60,
+        "max_audio_bytes": 25_000_000,
+    }
+    active = True
+    supports_multiple_generations = False
+    generator_family_name = "NVIDIAAudioTranscription"
+    modality = {"in": {"audio"}, "out": {"text"}}
+    audio_formats = {"wav"}
+
+    def __init__(self, name="", config_root=_config):
+        super().__init__(name or self.DEFAULT_MODEL, config_root=config_root)
+
+    def _transcription_url(self) -> str:
+        return f"{self.uri.rstrip('/')}/audio/" f"{self.name.strip('/')}/transcriptions"
+
+    def _audio_message(self, prompt: Conversation) -> Message:
+        if not isinstance(prompt, Conversation):
+            raise GarakException(
+                f"{self.__class__.__name__} expected a Conversation prompt."
+            )
+
+        for turn in reversed(prompt.turns):
+            message = turn.content
+            if message.data_path is not None:
+                return message
+            if message.data is not None:
+                return message
+
+        raise GarakException(
+            f"{self.__class__.__name__} expected a prompt containing audio data."
+        )
+
+    def _validate_audio_path(self, audio_path: Path) -> None:
+        if not audio_path.is_file():
+            raise GarakException(
+                f"{self.__class__.__name__} audio file not found: {audio_path}"
+            )
+        audio_format = audio_path.suffix.lower().lstrip(".")
+        if audio_format not in self.audio_formats:
+            raise GarakException(
+                f"{self.__class__.__name__} expected one of "
+                f"{sorted(self.audio_formats)} audio formats: {audio_path}"
+            )
+        if audio_path.stat().st_size > self.max_audio_bytes:
+            raise GarakException(
+                f"{self.__class__.__name__} audio file exceeds "
+                f"{self.max_audio_bytes} bytes: {audio_path}"
+            )
+
+    @staticmethod
+    def _mime_type(audio_path: Path) -> str:
+        mime_type, _ = mimetypes.guess_type(audio_path)
+        if mime_type == "audio/x-wav":
+            return "audio/wav"
+        return mime_type or "audio/wav"
+
+    def _post_transcription(self, file_payload) -> dict:
+        try:
+            response = requests.post(
+                self._transcription_url(),
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                data={"language": self.language},
+                files={"file": file_payload},
+                timeout=self.request_timeout,
+            )
+            response.raise_for_status()
+            response_json = response.json()
+        except requests.exceptions.RequestException as exc:
+            raise GarakException(
+                f"{self.__class__.__name__} transcription request failed."
+            ) from exc
+        except ValueError as exc:
+            raise GarakException(
+                f"{self.__class__.__name__} transcription response was not JSON."
+            ) from exc
+
+        if not isinstance(response_json.get("text"), str):
+            raise GarakException(
+                f"{self.__class__.__name__} transcription response omitted text."
+            )
+        return response_json
+
+    def _call_model(
+        self, prompt: Conversation, generations_this_call: int = 1
+    ) -> List[Union[Message, None]]:
+        assert (
+            generations_this_call == 1
+        ), "generations_per_call / n > 1 is not supported"
+
+        message = self._audio_message(prompt)
+        if message.data_path is not None:
+            audio_path = Path(message.data_path)
+            self._validate_audio_path(audio_path)
+            with audio_path.open("rb") as audio_file:
+                response_json = self._post_transcription(
+                    (audio_path.name, audio_file, self._mime_type(audio_path))
+                )
+        else:
+            audio_data = message.data
+            if len(audio_data) > self.max_audio_bytes:
+                raise GarakException(
+                    f"{self.__class__.__name__} audio data exceeds "
+                    f"{self.max_audio_bytes} bytes."
+                )
+            response_json = self._post_transcription(
+                ("audio.wav", audio_data, "audio/wav")
+            )
+
+        return [
+            Message(
+                text=response_json["text"],
+                lang=response_json.get("language_code", self.language),
+            )
+        ]
 
 
 class NVOpenAIChat(OpenAICompatible):
