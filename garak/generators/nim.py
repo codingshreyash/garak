@@ -174,9 +174,9 @@ class NVVoiceChat(Generator):
     at the shim's ``/v1`` base URL and set ``NIM_API_KEY`` (leave it blank if
     the endpoint requires no authentication).
 
-    The model requires trailing silence at the end of the audio so that it has
+    The target requires trailing silence at the end of the audio so that it has
     time to finish its response before the stream closes.  ``trailing_silence_ms``
-    (default 2000 ms) controls how much is appended; set to 0 to disable.
+    controls how much is appended; set to 0 to disable.
 
     Request payload shape::
 
