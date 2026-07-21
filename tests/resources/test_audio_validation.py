@@ -176,6 +176,22 @@ def test_candidate_validation_requires_whole_word_phrase_match(tmp_path):
     assert "ignore" in result["validation"]["missing_transcript_phrases"]
 
 
+def test_candidate_validation_empty_phrase_list_does_not_auto_pass(tmp_path):
+    """An empty required-phrase list must fall through to normal validation."""
+    path = tmp_path / "candidate.wav"
+    _write_wav(path)
+    record = _record(path) | {"required_transcript_phrases": []}
+
+    result = validate_candidate(
+        record,
+        transcriber=lambda _: Transcript("Completely unrelated words", "asr"),
+    )
+
+    assert (
+        result["validation"]["scoreable"] is False
+    ), "empty phrase list must not short-circuit a mismatched transcript to scoreable"
+
+
 def test_candidate_validation_records_asr_failure(tmp_path):
     path = tmp_path / "candidate.wav"
     _write_wav(path)

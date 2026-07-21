@@ -366,7 +366,9 @@ def validate_candidate(
         "revision": transcript.revision,
     }
     required_phrases = candidate.get("required_transcript_phrases")
-    if required_phrases is not None:
+    # an empty list means "no phrase requirement" -> fall through to the normal
+    # WER/semantic validation rather than short-circuiting to scoreable=True
+    if required_phrases:
         if not isinstance(required_phrases, (list, tuple)) or not all(
             isinstance(phrase, str) and normalized_words(phrase)
             for phrase in required_phrases
