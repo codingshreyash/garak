@@ -319,6 +319,16 @@ class NVVoiceChat(Generator):
             provenance["usage"] = response_json["usage"]
         return provenance
 
+    def _audio_requested(self) -> bool:
+        """Whether audio output was actually requested for this call.
+
+        ``extra_body`` may override ``generate_audio``; if audio was not
+        requested there is nothing to save and no error to raise.
+        """
+        if isinstance(self.extra_body, dict) and "generate_audio" in self.extra_body:
+            return bool(self.extra_body["generate_audio"])
+        return bool(self.generate_audio)
+
     def _save_response_audio(self, response_message: dict) -> dict:
         if self.response_audio_dir is None:
             return {}
@@ -326,9 +336,11 @@ class NVVoiceChat(Generator):
         audio = response_message.get("audio")
         encoded_audio = audio.get("data") if isinstance(audio, dict) else None
         if not isinstance(encoded_audio, str) or not encoded_audio:
-            raise GarakException(
-                f"{self.__class__.__name__} response omitted requested audio."
-            )
+            if self._audio_requested():
+                raise GarakException(
+                    f"{self.__class__.__name__} response omitted requested audio."
+                )
+            return {}
 
         import base64
         import binascii
@@ -392,8 +404,7 @@ class NVVoiceChat(Generator):
                 raise GarakException(
                     f"{self.__class__.__name__} audio file not found: {audio_path}"
                 )
-            audio_format = audio_path.suffix.lower().lstrip(".")
-            if audio_format not in self.audio_formats:
+            if audio_path.suffix.lower().lstrip(".") not in self.audio_formats:
                 raise GarakException(
                     f"{self.__class__.__name__} expected one of "
                     f"{sorted(self.audio_formats)} audio formats: {audio_path}"

@@ -370,6 +370,37 @@ def test_nv_voice_chat_optionally_saves_response_audio(monkeypatch, tmp_path):
     assert len(provenance["audio_sha256"]) == 64, "response digest is retained"
 
 
+def test_nv_voice_chat_response_audio_dir_with_audio_disabled_does_not_raise(
+    monkeypatch, tmp_path
+):
+    """response_audio_dir + extra_body disabling audio must not raise."""
+    audio_path = tmp_path / "question.wav"
+    audio_path.write_bytes(_make_wav())
+    # response carries no audio because generation was disabled
+    no_audio = _VCFakeResponse(
+        payload={"choices": [{"message": {"content": "Text-only reply."}}]}
+    )
+    monkeypatch.setattr(
+        "garak.generators.nim.requests.post", lambda *args, **kwargs: no_audio
+    )
+
+    output_dir = tmp_path / "responses"
+    generator = NVVoiceChat(
+        config_root=_vc_config(
+            trailing_silence_ms=0,
+            response_audio_dir=str(output_dir),
+            extra_body={"generate_audio": False},
+        )
+    )
+    result = generator._call_model(
+        Conversation([Turn("user", Message("ask", data_path=str(audio_path)))])
+    )
+
+    assert result[0].text == "Text-only reply."
+    provenance = result[0].notes["nvvoicechat_response"]
+    assert "audio_path" not in provenance, "nothing saved when audio was not requested"
+
+
 def test_nv_voice_chat_forwards_text_system_tools_and_extra_body(monkeypatch, tmp_path):
     wav_bytes = _make_wav()
     audio_path = tmp_path / "question.wav"
