@@ -127,13 +127,16 @@ context_lengths = {
     "o1-preview-2024-09-12": 32768,
 }
 
-audio_formats = ["wav", "mp3"]
 audio_mime_subtype_formats = {
     "mp3": "mp3",
     "mpeg": "mp3",
     "wav": "wav",
     "x-wav": "wav",
 }
+# the formats we can actually convert are the distinct target values above;
+# derive audio_formats from them so supported_formats() cannot advertise a
+# format that _conversation_to_list is unable to send
+audio_formats = set(audio_mime_subtype_formats.values())
 
 
 class OpenAICompatible(Generator):
@@ -144,7 +147,7 @@ class OpenAICompatible(Generator):
     active = True
     supports_multiple_generations = False
     generator_family_name = "OpenAICompatible"  # Placeholder override when extending
-    audio_formats = set(audio_formats)
+    audio_formats = audio_formats
 
     # template defaults optionally override when extending
     DEFAULT_PARAMS = Generator.DEFAULT_PARAMS | {

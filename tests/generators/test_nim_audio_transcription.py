@@ -153,3 +153,31 @@ def test_nim_audio_transcription_rejects_unsupported_audio_format(tmp_path):
                 [Turn("user", Message("transcribe", data_path=str(audio_path)))]
             )
         )
+
+
+def test_nim_audio_transcription_posts_inline_wav_bytes(monkeypatch):
+    captured = []
+
+    def fake_post(url, *, headers, data, files, timeout):
+        captured.append(files["file"])
+        return _FakeResponse()
+
+    monkeypatch.setattr("garak.generators.nim.requests.post", fake_post)
+
+    msg = Message("transcribe", data_type=("audio/wav", None))
+    msg.data = b"RIFF....WAVE"
+    generator = NVAudioTranscription(config_root=_config())
+    generator._call_model(Conversation([Turn("user", msg)]))
+
+    filename, payload, content_type = captured[0]
+    assert content_type == "audio/wav", "inline WAV bytes keep the wav mime type"
+    assert payload == b"RIFF....WAVE"
+
+
+def test_nim_audio_transcription_rejects_inline_non_wav_bytes():
+    msg = Message("transcribe", data_type=("audio/mpeg", None))
+    msg.data = b"\xff\xfb\x90"
+    generator = NVAudioTranscription(config_root=_config())
+
+    with pytest.raises(GarakException, match="expected one of"):
+        generator._call_model(Conversation([Turn("user", msg)]))

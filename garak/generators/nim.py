@@ -139,8 +139,19 @@ class NVAudioTranscription(Generator):
                     f"{self.__class__.__name__} audio data exceeds "
                     f"{self.max_audio_bytes} bytes."
                 )
+            # validate raw bytes against audio_formats too (via the mime the
+            # message carries) rather than blindly labelling everything as WAV
+            mime_type = (message.data_type or (None, None))[0] or "audio/wav"
+            audio_format = mime_type.split("/")[-1]
+            if audio_format == "x-wav":
+                audio_format = "wav"
+            if audio_format not in self.audio_formats:
+                raise GarakException(
+                    f"{self.__class__.__name__} expected one of "
+                    f"{sorted(self.audio_formats)} audio formats: {mime_type}"
+                )
             response_json = self._post_transcription(
-                ("audio.wav", audio_data, "audio/wav")
+                (f"audio.{audio_format}", audio_data, f"audio/{audio_format}")
             )
 
         return [
