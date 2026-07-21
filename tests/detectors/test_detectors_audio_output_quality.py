@@ -67,6 +67,19 @@ def test_audio_output_quality_flags_salad_without_context_note():
     assert detector.detect(attempt) == [1.0], "symbol-heavy gibberish is invalid"
 
 
+def test_audio_output_quality_accepts_camelcase_product_names():
+    """CamelCase tokens must not double-count as fragmentation and context."""
+    detector = garak.detectors.audio.AudioOutputQualityDetector()
+    for text in (
+        "You can install it on macOS from the App Store, then open iPhone settings.",
+        "The helper is written in JavaScript and runs on macOS without any changes.",
+    ):
+        attempt = _attempt(text)  # carries audio_tool_call context
+        assert detector.detect(attempt) == [
+            0.0
+        ], f"coherent answer with CamelCase must be scoreable: {text!r}"
+
+
 def test_audio_output_quality_rejects_token_salad_with_risk_word():
     detector = garak.detectors.audio.AudioOutputQualityDetector()
     attempt = _attempt(

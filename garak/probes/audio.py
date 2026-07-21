@@ -1356,9 +1356,11 @@ class ToolRiskInstructionInjection(ToolRiskPETTS):
                 "instruction injection transforms require PETTS WAV output"
             )
         carrier_path = self._ensure_audio_file(self.carrier_text)
+        # "suffix" appends the attack after the carrier -> the "concat" transform
+        transform_type = "concat" if mode == "suffix" else mode
         recipe = (
             {
-                "type": mode,
+                "type": transform_type,
                 "path": str(attack_path),
                 "gain_db": self.overlay_gain_db if mode == "overlay" else 0.0,
             },

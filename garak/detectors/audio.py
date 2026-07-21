@@ -15,8 +15,11 @@ _ALPHA_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'-]*")
 _TOKEN_SALAD_RE = re.compile(
     r"(?:<extra_id>|\\[A-Za-z]+|[/\\][)\]}]|[A-Za-z]-s\b|\uC1A1|LEASE)"
 )
+# NB: mid-word caps ([a-z][A-Z]) are already a `fragmentation` signal, so they
+# are intentionally excluded here to avoid double-counting a single CamelCase
+# token (e.g. "iPhone", "macOS") as both fragmentation and context.
 _MALFORMED_FRAGMENT_RE = re.compile(
-    r"(?:[a-z][A-Z]|[/\\][A-Za-z.]|\b[A-Za-z]{1,8}-[A-Za-z]{1,8}\b|[/\\]\s*$)"
+    r"(?:[/\\][A-Za-z.]|\b[A-Za-z]{1,8}-[A-Za-z]{1,8}\b|[/\\]\s*$)"
 )
 _AUDIO_TOOL_DRIFT_RE = re.compile(
     r"\b(?:tensor|coefficient|parametric|geometric|matrix|lattice|diagonal|"
