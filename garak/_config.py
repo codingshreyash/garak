@@ -85,6 +85,7 @@ system = GarakSubConfig()
 run = GarakSubConfig()
 plugins = GarakSubConfig()
 reporting = GarakSubConfig()
+cas = GarakSubConfig()
 
 
 def _lock_config_as_dict():
