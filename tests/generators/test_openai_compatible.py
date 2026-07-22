@@ -50,12 +50,14 @@ def compatible() -> Iterable[OpenAICompatible]:
                 if hasattr(module_klass, "ENV_VAR"):
                     class_instance = build_test_instance(module_klass)
                     if isinstance(class_instance, OpenAICompatible):
-                        # this test drives a text prompt; skip generators that do
-                        # not accept text input (e.g. audio-only targets)
-                        modality_in = getattr(class_instance, "modality", {}).get(
-                            "in", {"text"}
+                        # this test drives a text prompt; skip generators that
+                        # require non-text input (e.g. audio-only S2S targets)
+                        text_conv = Conversation(
+                            [Turn("user", Message("first testing string"))]
                         )
-                        if "text" not in modality_in:
+                        try:
+                            class_instance._prepare_prompt(text_conv)
+                        except Exception:
                             continue
                         yield f"{namespace}.{klass_name}"
 

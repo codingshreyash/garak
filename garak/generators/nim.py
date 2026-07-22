@@ -298,7 +298,7 @@ class NVVoiceChat(NVOpenAIChat):
     active = True
     supports_multiple_generations = False
     generator_family_name = "NVVoiceChat"
-    modality = {"in": {"audio"}, "out": {"text"}}
+    modality = {"in": {"audio", "text"}, "out": {"text"}}
     audio_formats = {"wav"}
 
     def __init__(self, name="", config_root=_config):
