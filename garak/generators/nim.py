@@ -277,13 +277,9 @@ class NVVoiceChat(NVOpenAIChat):
         "tool_choice": None,
         "extra_body": {},
         "extra_headers": {},
-        # Slow S2S endpoints need a long per-request timeout; the OpenAI SDK
-        # client handles retry/backoff on 429/5xx/connection errors internally,
-        # so request_retries maps to the client's max_retries.
-        "request_timeout": 120,
+        "request_timeout": 120,  # S2S endpoints can be slow
         "request_retries": 2,
-        # NVVoiceChat sends a deliberately minimal request; sampling params are
-        # suppressed because voice shims typically reject them.
+        # sampling params suppressed; voice shims typically reject them
         "suppressed_params": {
             "n",
             "frequency_penalty",
@@ -306,17 +302,11 @@ class NVVoiceChat(NVOpenAIChat):
     audio_formats = {"wav"}
 
     def __init__(self, name="", config_root=_config):
-        # Bypass NVOpenAIChat's org/model slash heuristic -- S2S shim model
-        # names need not be slash-formatted. OpenAICompatible.__init__ still
-        # enforces that a model name is set (raises if empty) and builds the SDK
-        # client.
+        # shim model names need not be slash-formatted; skip NVOpenAIChat's check
         OpenAICompatible.__init__(self, name, config_root=config_root)
 
     def _load_unsafe(self):
-        # Unlike NVOpenAIChat, do not enumerate models over the network when the
-        # name is unset — voice shims may not implement /models, and we want a
-        # clean, offline error message. Wire the configured timeout / retries
-        # into the SDK client (slow S2S endpoints need a long timeout).
+        # voice shims may not implement /models, so don't enumerate on empty name
         self.client = openai.OpenAI(
             base_url=self.uri,
             api_key=self.api_key,
