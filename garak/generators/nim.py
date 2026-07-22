@@ -3,13 +3,17 @@
 
 """NVIDIA NIM Microservice LLM Interface"""
 
+import base64
 import hashlib
+import io
 import json
 import logging
 import mimetypes
 from pathlib import Path
+import re
 import time
-from typing import List, Union
+from typing import List, Optional, Union
+import wave
 
 import openai
 import requests
@@ -764,6 +768,271 @@ class Vision(NVMultimodal):
     """
 
     modality = {"in": {"text", "image"}, "out": {"text"}}
+
+
+class DuplexCapable:
+    """Mixin declaring that a generator supports duplex session scripts.
+
+    Generators that inherit this mixin must implement :meth:`run_session`.
+    Probes call ``isinstance(generator, DuplexCapable)`` to decide whether to
+    run duplex probes or skip gracefully.
+    """
+
+    supports_duplex: bool = True
+
+    def run_session(
+        self,
+        script: "garak.resources.audio.session.SessionScript",
+    ) -> "garak.resources.audio.session.SessionResult":
+        raise NotImplementedError
+
+
+class NVDuplexChat(DuplexCapable, NVVoiceChat):
+    """Sequential-simulation duplex generator built on top of NVVoiceChat.
+
+    Executes a :class:`~garak.resources.audio.session.SessionScript` as a
+    multi-turn conversation: each user-stream event is sent as a separate
+    request that includes the full prior conversation history, so the target
+    sees a realistic, coherent multi-turn session.
+
+    Barge-in is modelled in *sequential simulation mode*: if a
+    :class:`~garak.resources.audio.session.ReactivePattern` is set on an event
+    and the previous agent response matches that pattern, the interrupt event
+    fires immediately after (no real-time interleaving).  This approximation
+    tests the same safety surface as true duplex barge-in because the model
+    sees an identical conversation prefix.
+
+    Point ``uri`` at the ``/v1`` base URL of any OpenAI-compatible
+    chat-completions shim (same as ``NVVoiceChat``) and set ``--target_name``
+    to the served model.
+    """
+
+    DEFAULT_PARAMS = NVVoiceChat.DEFAULT_PARAMS | {
+        "session_timeout": 300,
+        "turn_silence_ms": 500,   # silence appended between turns
+        "flood_count": 5,
+        "flood_interval_s": 0.64,
+    }
+    generator_family_name = "NVDuplexChat"
+
+    # ------------------------------------------------------------------
+    # Core session execution
+    # ------------------------------------------------------------------
+
+    def run_session(self, script) -> object:
+        from garak.resources.audio.session import SessionResult, SessionResultEvent
+
+        result = SessionResult()
+        history: list[dict] = []
+
+        if self.system_prompt:
+            history.append({"role": "system", "content": self.system_prompt})
+
+        interrupt_seen = False
+        interrupt_label = getattr(script, "interrupt_label", None)
+
+        for event in script.user_events():
+            audio_data = self._resolve_event_audio(event)
+            if audio_data is None:
+                logging.warning(
+                    "NVDuplexChat: skipping event %r — no audio could be resolved",
+                    event.label,
+                )
+                continue
+
+            # ---- send this turn ----------------------------------------
+            response_text, provenance = self._send_turn(audio_data, history, event)
+
+            t = event.offset_s
+            triggered_by = None
+
+            # ---- check reactive trigger from PREVIOUS response ---------
+            if (
+                event.trigger is not None
+                and result.events
+                and event.trigger.matches(result.events[-1].text)
+            ):
+                triggered_by = result.events[-1].label
+
+            result.events.append(
+                SessionResultEvent(
+                    offset_s=t,
+                    stream="user",
+                    text="[audio]",
+                    label=event.label,
+                )
+            )
+            result.events.append(
+                SessionResultEvent(
+                    offset_s=t,
+                    stream="agent",
+                    text=response_text,
+                    label=f"response_to_{event.label}",
+                    triggered_by=triggered_by,
+                )
+            )
+
+            # ---- update history ----------------------------------------
+            audio_b64 = base64.b64encode(audio_data).decode()
+            user_content: list[dict] = []
+            if event.text and self.text_prompt is None:
+                user_content.append({"type": "text", "text": event.text})
+            elif self.text_prompt:
+                user_content.append({"type": "text", "text": self.text_prompt})
+            user_content.append(
+                {
+                    "type": "input_audio",
+                    "input_audio": {"data": audio_b64, "format": self.audio_format},
+                }
+            )
+            history.append({"role": "user", "content": user_content})
+            history.append({"role": "assistant", "content": response_text})
+
+            # ---- track interrupt boundary -------------------------------
+            if interrupt_label and event.label == interrupt_label:
+                interrupt_seen = True
+
+        # ---- assemble transcript splits --------------------------------
+        agent_responses = [e for e in result.events if e.stream == "agent"]
+        result.full_transcript = " ".join(e.text for e in agent_responses)
+
+        if interrupt_seen and interrupt_label:
+            pre_events: list = []
+            post_events: list = []
+            past_interrupt = False
+            for e in result.events:
+                if e.stream == "user" and e.label == interrupt_label:
+                    past_interrupt = True
+                    continue
+                if e.stream != "agent":
+                    continue
+                if past_interrupt:
+                    post_events.append(e)
+                else:
+                    pre_events.append(e)
+            result.pre_interrupt_transcript = " ".join(e.text for e in pre_events)
+            result.post_interrupt_transcript = " ".join(e.text for e in post_events)
+        else:
+            result.post_interrupt_transcript = result.full_transcript
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _resolve_event_audio(self, event) -> Optional[bytes]:
+        """Return raw WAV bytes for *event*, synthesising / loading as needed."""
+        if event.audio_data is not None:
+            return event.audio_data
+        if event.audio_path is not None:
+            p = Path(event.audio_path)
+            if not p.is_file():
+                return None
+            return p.read_bytes()
+        # No pre-built audio — caller is expected to pre-synthesise and set
+        # audio_path or audio_data before calling run_session.
+        return None
+
+    def _send_turn(
+        self, audio_data: bytes, history: list[dict], event
+    ) -> tuple[str, dict]:
+        """POST one audio turn with full conversation history; return (transcript, provenance)."""
+        if self.trailing_silence_ms > 0:
+            audio_data = self._append_wav_silence(audio_data, self.trailing_silence_ms)
+
+        audio_b64 = base64.b64encode(audio_data).decode()
+
+        messages = list(history)
+        user_content: list[dict] = []
+        text_label = (event.text or "") if (self.text_prompt is None) else self.text_prompt
+        if text_label:
+            user_content.append({"type": "text", "text": text_label})
+        user_content.append(
+            {
+                "type": "input_audio",
+                "input_audio": {"data": audio_b64, "format": self.audio_format},
+            }
+        )
+        messages.append({"role": "user", "content": user_content})
+
+        payload: dict = {
+            "model": self.name,
+            "messages": messages,
+            "generate_audio": self.generate_audio,
+        }
+        if self.extra_body:
+            payload.update(self.extra_body)
+        if self.tools:
+            payload["tools"] = self.tools
+        if self.tool_choice:
+            payload["tool_choice"] = self.tool_choice
+
+        headers: dict = {"Content-Type": "application/json"}
+        if self.extra_headers:
+            headers.update(self.extra_headers)
+        api_key = getattr(self, "api_key", None) or getattr(self, "ENV_VAR", None)
+        if api_key and hasattr(self, "api_key"):
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        response = self._post_completion(headers=headers, payload=payload)
+        response_json = response.json()
+        response_message = response_json["choices"][0]["message"]
+
+        if response_message.get("tool_calls"):
+            text = json.dumps(
+                {
+                    "tool_calls": response_message["tool_calls"],
+                    "content": response_message.get("content"),
+                },
+                sort_keys=True,
+            )
+        else:
+            text = response_message.get("content") or ""
+
+        provenance = {
+            "http_status": response.status_code,
+            "audio_present": bool(
+                response_message.get("audio", {}).get("data") if isinstance(response_message.get("audio"), dict) else False
+            ),
+            "event_label": event.label,
+        }
+        return text, provenance
+
+    def _post_completion(self, *, headers: dict, payload: dict):
+        """POST to /v1/chat/completions with exponential-backoff retry."""
+        url = f"{self.uri.rstrip('/')}/chat/completions"
+        last_exc: Optional[Exception] = None
+        for attempt_index in range(self.request_retries + 1):
+            try:
+                response = requests.post(
+                    url,
+                    headers=headers,
+                    json=payload,
+                    timeout=self.request_timeout,
+                )
+                if response.status_code not in getattr(self, "retry_status_codes", ()):
+                    response.raise_for_status()
+                    return response
+            except requests.exceptions.RequestException as exc:
+                last_exc = exc
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                retryable = (
+                    status in getattr(self, "retry_status_codes", ())
+                    or isinstance(exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout))
+                )
+                if not retryable or attempt_index >= self.request_retries:
+                    raise GarakException(
+                        f"{self.__class__.__name__} request failed: {exc}"
+                    ) from exc
+                delay = min(
+                    self.retry_delay_seconds * (2 ** attempt_index),
+                    self.retry_max_delay_seconds,
+                )
+                time.sleep(delay)
+        raise GarakException(
+            f"{self.__class__.__name__} exhausted retries"
+        ) from last_exc
 
 
 DEFAULT_CLASS = "NVOpenAIChat"
