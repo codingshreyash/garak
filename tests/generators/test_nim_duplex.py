@@ -131,6 +131,65 @@ class TestResolveEventAudio:
 # ---------------------------------------------------------------------------
 
 
+class TestTranscribeResponseAudio:
+    def test_asr_not_called_when_asr_uri_unset(self, monkeypatch):
+        """Without asr_uri configured, blank content is returned as-is."""
+        gen = NVDuplexChat.__new__(NVDuplexChat)
+        gen.asr_uri = None
+        # _transcribe_response_audio should never be reached
+        assert gen.asr_uri is None
+
+    def test_transcribe_called_on_blank_content_with_asr_uri(self, monkeypatch):
+        gen = NVDuplexChat("test-model", config_root=_vc_config())
+        gen.trailing_silence_ms = 0
+        gen.asr_uri = "https://asr.test/v1"
+        gen.asr_model = "nvidia/parakeet-1-1b-rnnt-multilingual"
+        gen.asr_language = "en-US"
+
+        asr_called = []
+
+        def fake_transcribe(audio_b64: str) -> str:
+            asr_called.append(audio_b64)
+            return "I cannot help with that."
+
+        monkeypatch.setattr(gen, "_transcribe_response_audio", fake_transcribe)
+
+        # Fake response: blank content but audio data present
+        import base64 as _b64
+        dummy_audio = _b64.b64encode(b"RIFF....WAVE").decode()
+
+        def fake_post(*, headers, payload):
+            return _FakeResponse.__new__(_FakeResponse).__class__(
+                **{
+                    **_FakeResponse.__init__.__code__.co_varnames  # just use the class directly
+                }
+            ) if False else type("R", (), {
+                "status_code": 200,
+                "raise_for_status": lambda self: None,
+                "json": lambda self: {
+                    "choices": [{"message": {"role": "assistant", "content": "", "audio": {"data": dummy_audio}}}]
+                },
+            })()
+
+        monkeypatch.setattr(gen, "_post_completion", fake_post)
+
+        from garak.resources.audio.session import SessionEvent, SessionScript
+
+        import io, struct, wave as _wave
+        buf = io.BytesIO()
+        with _wave.open(buf, "wb") as wf:
+            wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(16000)
+            wf.writeframes(struct.pack("<100h", *([0]*100)))
+        wav_bytes = buf.getvalue()
+
+        event = SessionEvent(stream="user", offset_s=0.0, audio_data=wav_bytes, label="req")
+        text, provenance = gen._send_turn(wav_bytes, [], event)
+
+        assert asr_called, "ASR transcription should have been called for blank content with audio"
+        assert text == "I cannot help with that."
+        assert provenance["asr_used"] is True
+
+
 class TestRunSession:
     def _make_gen(self, monkeypatch, responses: list[str]):
         gen = NVDuplexChat("test-model", config_root=_vc_config())

@@ -229,12 +229,15 @@ class NVVoiceChat(Generator):
     audio_formats = {"wav"}
 
     def __init__(self, name="", config_root=_config):
-        if not name:
+        # The name may arrive positionally OR via config (--target_name /
+        # generator option file). super().__init__ applies config, so check
+        # self.name AFTER it, not the positional arg (which garak leaves empty).
+        super().__init__(name, config_root=config_root)
+        if not getattr(self, "name", None):
             raise ValueError(
                 f"{self.generator_family_name} requires model name to be set, "
                 "e.g. --target_name <model-served-by-the-shim>"
             )
-        super().__init__(name, config_root=config_root)
 
     def _completions_url(self) -> str:
         return f"{self.uri.rstrip('/')}/chat/completions"
@@ -812,6 +815,15 @@ class NVDuplexChat(DuplexCapable, NVVoiceChat):
         "turn_silence_ms": 500,   # silence appended between turns
         "flood_count": 5,
         "flood_interval_s": 0.64,
+        # If the target returns audio only (no text content), NVDuplexChat can
+        # fall back to an external ASR service to produce a scorable transcript.
+        # Set asr_uri to the /v1 base URL of an NVAudioTranscription-compatible
+        # endpoint (e.g. https://inference-api.nvidia.com/v1) and asr_model to
+        # the transcription model name.  Leave both as None to skip transcription
+        # and surface empty output to detectors instead.
+        "asr_uri": None,
+        "asr_model": NVAudioTranscription.DEFAULT_MODEL,
+        "asr_language": "en-US",
     }
     generator_family_name = "NVDuplexChat"
 
@@ -979,6 +991,10 @@ class NVDuplexChat(DuplexCapable, NVVoiceChat):
         response_json = response.json()
         response_message = response_json["choices"][0]["message"]
 
+        audio_field = response_message.get("audio") if isinstance(response_message.get("audio"), dict) else {}
+        audio_b64_response = audio_field.get("data", "")
+        audio_present = bool(audio_b64_response)
+
         if response_message.get("tool_calls"):
             text = json.dumps(
                 {
@@ -990,14 +1006,68 @@ class NVDuplexChat(DuplexCapable, NVVoiceChat):
         else:
             text = response_message.get("content") or ""
 
+        # If the target returned audio but no text transcript, fall back to an
+        # explicit ASR service when one is configured.  This keeps the
+        # transcription step visible in generator config rather than hidden, per
+        # garak's convention that modality conversion is not the generator's job
+        # but may be wired in as an explicit user-configured helper.
+        if not text.strip() and audio_present and self.asr_uri:
+            text = self._transcribe_response_audio(audio_b64_response)
+
         provenance = {
             "http_status": response.status_code,
-            "audio_present": bool(
-                response_message.get("audio", {}).get("data") if isinstance(response_message.get("audio"), dict) else False
-            ),
+            "audio_present": audio_present,
+            "asr_used": bool(not (response_message.get("content") or "").strip() and audio_present and self.asr_uri),
             "event_label": event.label,
         }
         return text, provenance
+
+    def _transcribe_response_audio(self, audio_b64: str) -> str:
+        """Transcribe base64 WAV from target response using the configured ASR service.
+
+        Called only when ``asr_uri`` is set.  Uses :class:`NVAudioTranscription`
+        with the configured ``asr_model`` and ``asr_language`` so the
+        transcription service is explicit and user-controlled rather than hidden
+        inside the generator.
+        """
+        import tempfile
+        from pathlib import Path
+
+        try:
+            raw = base64.b64decode(audio_b64)
+        except Exception as exc:
+            logging.warning("NVDuplexChat: could not decode response audio: %s", exc)
+            return ""
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp.write(raw)
+            tmp_path = tmp.name
+
+        try:
+            asr = NVAudioTranscription(
+                name=self.asr_model,
+                config_root={
+                    "generators": {
+                        "nim": {
+                            "NVAudioTranscription": {
+                                "api_key": getattr(self, "api_key", ""),
+                                "uri": self.asr_uri,
+                                "language": self.asr_language,
+                            }
+                        }
+                    }
+                },
+            )
+            from garak.attempt import Conversation, Turn, Message as _Msg
+
+            conv = Conversation([Turn("user", _Msg("transcribe", data_path=tmp_path))])
+            results = asr._call_model(conv)
+            return results[0].text if results and results[0] else ""
+        except Exception as exc:
+            logging.warning("NVDuplexChat: ASR transcription failed: %s", exc)
+            return ""
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
 
     def _post_completion(self, *, headers: dict, payload: dict):
         """POST to /v1/chat/completions with exponential-backoff retry."""
