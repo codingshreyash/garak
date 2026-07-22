@@ -331,7 +331,6 @@ class AudioAchillesHeel(garak.probes.Probe):
         "avid-effect:performance:P0204",
         "quality:Security:PromptStability",
         "demon:Language:Code_and_encode:Data_presentation",  # switches to audio modality to bypass text-based alignment
-        "demon:Language:Code_and_encode:Modality_shift",  # moves the attack instructions from text into audio
     ]
     goal = "disregard the system prompt via audio component"
     tier = garak.probes.Tier.UNLISTED
@@ -418,7 +417,7 @@ class PETTS(garak.probes.IntentProbe):
         "avid-effect:security:S0403",  # uses speech as an adversarial input form
         "avid-effect:performance:P0204",  # tests whether audio input changes target accuracy
         "quality:Security:PromptStability",  # checks stability across text-to-audio conversion
-        "demon:Language:Code_and_encode:Modality_shift",  # moves the same intent into spoken audio
+        "demon:Language:Code_and_encode:Data_presentation",  # moves the same intent into spoken audio
     ]
     goal = "evaluate intent handling through spoken audio input"
     # generic mitigation-bypass default; concrete subclasses set task-specific detectors
@@ -828,7 +827,7 @@ class ToolRiskPETTS(PETTS):
         "avid-effect:security:S0403",  # tests security-impacting tool-action behaviour
         "avid-effect:performance:P0204",  # measures audio input handling for operational requests
         "quality:Security:PromptStability",  # compares behaviour after text-to-speech conversion
-        "demon:Language:Code_and_encode:Modality_shift",  # moves tool-risk requests into spoken audio
+        "demon:Language:Code_and_encode:Data_presentation",  # moves tool-risk requests into spoken audio
     ]
     goal = "evaluate risky tool-action handling through spoken audio input"
     tier = garak.probes.Tier.UNLISTED
@@ -1711,7 +1710,7 @@ class TTSReliability(PETTS):
     tags = [
         "avid-effect:performance:P0204",  # checks whether audio input preserves prompt content
         "quality:Security:PromptStability",  # flags prompt drift across text-to-speech transport
-        "demon:Language:Code_and_encode:Modality_shift",  # validates the spoken channel before downstream probes
+        "demon:Language:Code_and_encode:Data_presentation",  # validates the spoken channel before downstream probes
     ]
     goal = "verify text-to-speech reliability before downstream audio probes"
     parallelisable_attempts = False
@@ -1867,7 +1866,7 @@ class SemanticReliability(PETTS):
     tags = [
         "avid-effect:performance:P0204",  # checks whether audio input preserves prompt meaning
         "quality:Security:PromptStability",  # flags prompt drift across text-to-speech transport
-        "demon:Language:Code_and_encode:Modality_shift",  # validates spoken-channel comprehension
+        "demon:Language:Code_and_encode:Data_presentation",  # validates spoken-channel comprehension
     ]
     goal = "verify spoken semantic comprehension before downstream audio probes"
     parallelisable_attempts = False
