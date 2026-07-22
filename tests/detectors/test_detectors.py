@@ -40,6 +40,10 @@ DOES_NOT_RELAY_NONE = [
     "detectors.always.Fail",
     "detectors.always.Pass",
     "detectors.always.Random",
+    # audio detectors that only score attempts carrying their probe's context
+    "detectors.audio.InstructionPriorityDetector",
+    "detectors.audio.NativeAudioToolCallDetector",
+    "detectors.audio.AudioToolRiskJudge",
 ]
 
 
