@@ -127,8 +127,14 @@ context_lengths = {
     "o1-preview-2024-09-12": 32768,
 }
 
-audio_formats = ["wav", "mp3"]
-audio_pattern = re.compile("|".join(audio_formats))
+audio_mime_subtype_formats = {
+    "mp3": "mp3",
+    "mpeg": "mp3",
+    "wav": "wav",
+    "x-wav": "wav",
+}
+# the formats we can send are the mime-map's target values
+audio_formats = set(audio_mime_subtype_formats.values())
 
 
 class OpenAICompatible(Generator):
@@ -139,6 +145,7 @@ class OpenAICompatible(Generator):
     active = True
     supports_multiple_generations = False
     generator_family_name = "OpenAICompatible"  # Placeholder override when extending
+    audio_formats = audio_formats
 
     # template defaults optionally override when extending
     DEFAULT_PARAMS = Generator.DEFAULT_PARAMS | {
@@ -215,7 +222,7 @@ class OpenAICompatible(Generator):
                             },
                         ],
                     }
-                elif match := audio_pattern.search(
+                elif audio_format := audio_mime_subtype_formats.get(
                     turn.content.data_type[0].split("/")[-1]
                 ):
                     transformed_turn = {
@@ -226,7 +233,7 @@ class OpenAICompatible(Generator):
                                 "type": "input_audio",
                                 "input_audio": {
                                     "data": f"{data_b64}",
-                                    "format": match.group(0),
+                                    "format": audio_format,
                                 },
                             },
                         ],
@@ -315,6 +322,22 @@ class OpenAICompatible(Generator):
 
         try:
             response = generator.create(**create_args)
+        except (
+            openai.AuthenticationError,
+            openai.PermissionDeniedError,
+        ) as e:
+            # 401 / 403 are terminal: retrying with the same key is pointless.
+            # Raise GarakException *before* the exception leaves this frame so
+            # that multiprocessing.Pool workers can pickle it cleanly.
+            # openai.APIStatusError carries an httpx.Response that is not
+            # picklable, which causes a TypeError in Pool's _handle_results
+            # thread and masks the real error (see github.com/NVIDIA/garak/issues/1357).
+            msg = (
+                f"OpenAI API authentication failed (HTTP {e.status_code}); "
+                f"verify {self.key_env_var} is valid. Original error: {e}"
+            )
+            logging.error(msg)
+            raise garak.exception.GarakException(msg) from None
         except openai.BadRequestError as e:
             msg = "Bad request: " + str(repr(prompt))
             logging.exception(e)
@@ -358,6 +381,20 @@ class OpenAICompatible(Generator):
             )
 
         return reponse_message_list
+
+
+class OpenAIAudioCompatible(OpenAICompatible):
+    """OpenAI-compatible chat target explicitly known to accept audio input.
+
+    Use this class only for endpoints whose advertised API capability includes
+    audio. The generic :class:`OpenAICompatible` target remains text-only at
+    the harness boundary so an arbitrary endpoint is not sent unsupported
+    binary content.
+    """
+
+    ENV_VAR = OpenAICompatible.ENV_VAR
+    generator_family_name = "OpenAIAudioCompatible"
+    modality = {"in": {"text", "audio"}, "out": {"text"}}
 
 
 class OpenAIGenerator(OpenAICompatible):

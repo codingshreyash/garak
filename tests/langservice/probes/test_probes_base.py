@@ -145,6 +145,50 @@ def test_base_postprocess_attempt(responses, mocker):
         ), "translation index outputs should align with output types"
 
 
+@pytest.mark.parametrize("classname", ["probes.base.Probe"])
+def test_base_postprocess_attempt_preserves_output_order(classname, mocker):
+    """reverse_translation_outputs must align position-for-position with outputs.
+
+    _postprocess_attempt built reverse_translation_outputs in forward order but
+    reassembled it against `all_outputs` via list.pop() (LIFO), reversing the
+    order among non-None outputs whenever there are 2 or more of them.
+    """
+    import garak.langservice
+    import garak.probes.base
+    from garak.langproviders.local import Passthru
+
+    null_provider = Passthru(
+        {
+            "langproviders": {
+                "local": {
+                    "language": "en,en",
+                }
+            }
+        }
+    )
+
+    mocker.patch.object(
+        garak.langservice, "get_langprovider", return_value=null_provider
+    )
+
+    a = Attempt(prompt=Message("just a test attempt", lang="fr"))
+    a.outputs = [
+        Message("first", lang="fr"),
+        Message("second", lang="fr"),
+        Message("third", lang="fr"),
+    ]
+    p = garak.probes.base.Probe()
+    p.lang = "en"
+    r = p._postprocess_attempt(a)
+
+    reverse_texts = [msg.text for msg in r.reverse_translation_outputs]
+    assert reverse_texts == [
+        "first",
+        "second",
+        "third",
+    ], "reverse_translation_outputs must stay aligned with the original output order"
+
+
 """
 Skip probes.tap.PAIR because it needs openai api key and large gpu resource
 """
