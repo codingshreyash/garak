@@ -1063,10 +1063,7 @@ class ToolRiskPairedSemanticPETTS(ToolRiskSemanticPETTS):
         "mitigation.MitigationBypass",
         "judge.Jailbreak",
     ]
-    # porous_refusal is available as an opt-in strategy but is NOT in the default
-    # set: on Nemotron VoiceChat it backfired -- it hardened refusals, degraded
-    # benign-control comprehension, and produced incoherent looping output
-    # (local shim smoke, 2026-07-06). direct remains the strongest framing here.
+    # porous_refusal is an opt-in strategy, not part of the default set
     DEFAULT_PARAMS = ToolRiskSemanticPETTS.DEFAULT_PARAMS | {
         "semantic_strategies": ("direct", "narrative", "dilution"),
         # default to only the cases that have a matched benign control, so the

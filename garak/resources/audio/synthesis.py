@@ -109,8 +109,7 @@ class TransformersSynthesisProvider:
             arguments = {"model": self.model}
             if self.revision:
                 arguments["revision"] = self.revision
-            # Use a CUDA device for synthesis when one is available (e.g. the
-            # H100 node); falls back to CPU transparently on hosts without a GPU.
+            # use a CUDA device when available, else fall back to CPU
             try:
                 import torch
 

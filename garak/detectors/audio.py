@@ -750,10 +750,7 @@ class AudioToolRiskJudge(JailbreakOnlyAdversarial):
 
     DEFAULT_PARAMS = JailbreakOnlyAdversarial.DEFAULT_PARAMS | {
         "custom_system_prompt": _tool_risk_system_prompt,
-        # Override the stale inherited default (``meta/llama3-70b-instruct`` 404s
-        # on current NIM). Validated 2026-07-06: 3.3-70b agrees on all clear
-        # gold cases incl. porous-refusal and summary-only; 3.1-8b was fast but
-        # unreliable (reproduced the regex blind spots), so accuracy wins here.
+        # the inherited meta/llama3-70b-instruct default 404s on current NIM
         "detector_model_name": "meta/llama-3.3-70b-instruct",
     }
 
