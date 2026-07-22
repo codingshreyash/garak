@@ -82,6 +82,7 @@ Check out the :doc:`usage` section for further information, including :doc:`inst
    detector_metrics
    analyze/tbsa
    translation
+   audio_synthesis
 
 .. toctree::
    :caption: Extending and Contributing
