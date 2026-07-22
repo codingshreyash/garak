@@ -56,6 +56,28 @@ class TestRefusalReversalDetector:
         scores = list(self.det.detect(a))
         assert scores[0] is None
 
+    def test_empty_full_transcript_returns_none(self):
+        a = Attempt(prompt=Message(text="[audio]"))
+        a.outputs = [Message(text=" ")]
+        a.notes["duplex"] = {
+            "pre_interrupt_transcript": "",
+            "post_interrupt_transcript": " ",
+            "full_transcript": " ",   # single space — what the endpoint returned
+        }
+        scores = list(self.det.detect(a))
+        assert scores[0] is None, "blank output must be None, not 0.0 (a false pass)"
+
+    def test_whitespace_full_transcript_returns_none(self):
+        a = Attempt(prompt=Message(text="[audio]"))
+        a.outputs = [Message(text="\n\t ")]
+        a.notes["duplex"] = {
+            "pre_interrupt_transcript": "",
+            "post_interrupt_transcript": "",
+            "full_transcript": "\n\t ",
+        }
+        scores = list(self.det.detect(a))
+        assert scores[0] is None
+
     def test_borderline_refusal_dropped_no_substantive(self):
         a = _attempt_with_duplex(
             pre="I cannot help with that.",

@@ -142,9 +142,30 @@ class DuplexPETTS(ToolRiskPETTS):
 
         scripts = self._build_session_scripts(audio_paths, source_cases)
 
+        # Align scripts with audio_msgs: _build_session_scripts may produce
+        # multiple scripts per case (e.g. one per affirmation phrasing in
+        # PETTSBargeInterrupt).  zip() would silently truncate to the shorter
+        # list.  Instead, replicate audio_msgs to match len(scripts) based on
+        # how many scripts each case produced.
+        n_cases = len(audio_msgs)
+        if n_cases == 0 or not scripts:
+            return []
+
+        scripts_per_case = len(scripts) // n_cases
+        if scripts_per_case < 1:
+            scripts_per_case = 1
+
+        aligned_msgs: list = []
+        for case_idx, msg in enumerate(audio_msgs):
+            start = case_idx * scripts_per_case
+            end = start + scripts_per_case
+            aligned_msgs.extend([msg] * (end - start))
+        # Guard against uneven division (last case may have fewer scripts)
+        aligned_msgs = aligned_msgs[: len(scripts)]
+
         self.generator = generator
         attempts: list[Attempt] = []
-        for seq, (script, audio_msg) in enumerate(zip(scripts, audio_msgs)):
+        for seq, (script, audio_msg) in enumerate(zip(scripts, aligned_msgs)):
             attempt = self._mint_attempt(audio_msg, seq=seq)
 
             # ---- run the session ----------------------------------------
@@ -159,11 +180,21 @@ class DuplexPETTS(ToolRiskPETTS):
 
             # ---- populate outputs / notes --------------------------------
             if result is not None:
-                attempt.outputs = [Message(text=result.post_interrupt_transcript or result.full_transcript)]
-                attempt.notes["duplex"] = result.as_dict()
+                transcript = result.post_interrupt_transcript or result.full_transcript
+                attempt.outputs = [Message(text=transcript)]
+                duplex_notes = result.as_dict()
+                # Surface empty-output clearly so detectors can return None
+                if not transcript or not transcript.strip():
+                    duplex_notes["empty_output"] = True
+                    logging.warning(
+                        "%s seq %d: target returned empty transcript — "
+                        "check generate_audio setting or endpoint connectivity",
+                        self.__class__.__name__, seq,
+                    )
+                attempt.notes["duplex"] = duplex_notes
             else:
-                attempt.outputs = [None]
-                attempt.notes["duplex"] = {"error": "run_session failed"}
+                attempt.outputs = [Message(text="")]
+                attempt.notes["duplex"] = {"error": "run_session failed", "empty_output": True}
 
             self._attempt_prestore_hook(attempt, seq)
             attempts.append(attempt)
@@ -200,6 +231,10 @@ class PETTSBargeInterrupt(DuplexPETTS):
     active = False
     primary_detector = "audio_duplex.RefusalReversalDetector"
     extended_detectors = [
+        # StateDestabilizationDetector catches blank/empty responses that
+        # RefusalReversalDetector returns None for — without it, empty output
+        # would silently count as "passed" in the harness summary.
+        "audio_duplex.StateDestabilizationDetector",
         "audio.AudioOutputQualityDetector",
         "audio.ToolRiskActionDetector",
     ]

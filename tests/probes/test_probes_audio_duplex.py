@@ -142,6 +142,24 @@ class TestPETTSBargeInterrupt:
             assert events[0].label == "initial_request"
             assert events[1].label == "interrupt"
 
+    def test_scripts_cover_all_affirmation_variants(self, probe_env, monkeypatch):
+        """5 cases × 4 affirmations = 20 scripts, not 5 (the zip-truncation bug)."""
+        wav = probe_env / "test.wav"
+        wav.write_bytes(_make_wav_bytes())
+        probe = PETTSBargeInterrupt()
+        probe.audio_cache_dir = probe_env
+        monkeypatch.setattr(probe, "_ensure_audio_file", lambda t: wav)
+
+        n_cases = 5
+        source_cases = [("c", "i", "t")] * n_cases
+        scripts = probe._build_session_scripts([wav] * n_cases, source_cases)
+
+        expected = n_cases * len(probe.affirmation_clips)
+        assert len(scripts) == expected, (
+            f"expected {expected} scripts ({n_cases} cases × "
+            f"{len(probe.affirmation_clips)} affirmations), got {len(scripts)}"
+        )
+
     def test_interrupt_event_has_trigger(self, probe_env, monkeypatch):
         wav = probe_env / "test.wav"
         wav.write_bytes(_make_wav_bytes())
