@@ -14,7 +14,7 @@ import json
 import logging
 from collections.abc import Iterable
 import random
-from typing import Iterable, Union
+from typing import Iterable, List, Set, Union
 
 from colorama import Fore, Style
 import tqdm
@@ -826,3 +826,59 @@ class IterativeProbe(Probe):
         next_turn_attempts = self._generate_next_attempts(this_attempt)
         self.attempt_queue.extend(next_turn_attempts)
         return processed
+
+
+class IntentProbe(Probe):
+    """Probe implementing a technique that tests over a range of intents.
+
+    Minimal shim for experiment/audio-s2s-probes: concrete subclasses (PETTS
+    family) override _populate_intents/_populate_stubs/build_prompts with
+    hardcoded data, so intentservice is never actually invoked.
+    """
+
+    import garak.services.intentservice
+
+    intent = None
+    skip_root_intents = True
+    blocked_intent_spec = ""
+
+    def __init__(self, config_root=_config):
+        super().__init__(config_root)
+        self._populate_intents()
+        self._populate_stubs()
+        self.build_prompts()
+
+    def _attempt_prestore_hook(
+        self, attempt: garak.attempt.Attempt, seq: int
+    ) -> garak.attempt.Attempt:
+        if hasattr(self, "prompt_intents") and seq < len(self.prompt_intents):
+            attempt.intent = self.prompt_intents[seq]
+        return attempt
+
+    def _populate_intents(self) -> None:
+        self.intents = garak.services.intentservice.get_applicable_intents(
+            blocked_spec=self.blocked_intent_spec
+        )
+
+    def _populate_stubs(self) -> None:
+        from garak.intents import Stub
+
+        self.stubs: List[Stub] = []
+        self.stub_intents: List = []
+        for intent in self.intents:
+            if self.skip_root_intents and len(intent) == 1:
+                continue
+            intent_stubs = garak.services.intentservice.get_intent_stubs(intent)
+            for stub in intent_stubs:
+                self.stubs.append(stub)
+                self.stub_intents.append(intent)
+
+    def build_prompts(self):
+        self.prompts = []
+        self.prompt_intents = []
+        for i, stub in enumerate(self.stubs):
+            self.prompts.append(stub.content)
+            self.prompt_intents.append(self.stub_intents[i])
+
+    def probe(self, generator) -> Iterable[garak.attempt.Attempt]:
+        return super().probe(generator)
