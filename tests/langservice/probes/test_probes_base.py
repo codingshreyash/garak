@@ -295,7 +295,13 @@ def test_probe_prompt_translation(classname, mocker):
     except GarakException:
         pytest.skip("Probe could not be configured with available data")
 
-    if probe_instance.lang != "en" or classname == "probes.tap.PAIR":
+    if (
+        probe_instance.lang != "en"
+        or classname == "probes.tap.PAIR"
+        or classname.startswith("probes.audio")
+    ):
+        # audio probes synthesise speech rather than translating prompt text,
+        # so they do not follow the standard text-prompt translation pattern
         pytest.skip("Probe does not engage with language provision")
 
     generator_instance = _plugins.load_plugin("generators.test.Repeat")
