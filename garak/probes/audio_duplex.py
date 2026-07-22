@@ -166,7 +166,16 @@ class DuplexPETTS(ToolRiskPETTS):
         self.generator = generator
         attempts: list[Attempt] = []
         for seq, (script, audio_msg) in enumerate(zip(scripts, aligned_msgs)):
-            attempt = self._mint_attempt(audio_msg, seq=seq)
+            # ``seq`` is the SCRIPT index, but the parent prestore hook indexes
+            # ``_prepared_tool_risk_cases`` which holds ONE entry per CASE.
+            # Map the script index back to its case index so the lookup is in
+            # range (multiple scripts per case -> same case_idx).
+            case_idx = (
+                min(seq // scripts_per_case, len(source_cases) - 1)
+                if source_cases
+                else 0
+            )
+            attempt = self._mint_attempt(audio_msg, seq=case_idx)
 
             # ---- run the session ----------------------------------------
             try:
@@ -196,7 +205,8 @@ class DuplexPETTS(ToolRiskPETTS):
                 attempt.outputs = [Message(text="")]
                 attempt.notes["duplex"] = {"error": "run_session failed", "empty_output": True}
 
-            self._attempt_prestore_hook(attempt, seq)
+            # NB: _mint_attempt already applied _attempt_prestore_hook; do not
+            # call it again here (double-apply + wrong index caused IndexError).
             attempts.append(attempt)
 
         self._generator_cleanup()

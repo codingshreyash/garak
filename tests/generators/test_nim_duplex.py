@@ -1,21 +1,24 @@
 # SPDX-FileCopyrightText: Portions Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for NVDuplexChat and the DuplexCapable mixin."""
+"""Tests for NVDuplexChat and the DuplexCapable mixin.
 
-import base64
+NVDuplexChat now extends NVVoiceChat (OpenAI SDK path) and returns TEXT only.
+run_session drives self._call_model per turn, so these tests stub _call_model
+rather than any HTTP layer. No audio-output / ASR-fallback behaviour exists.
+"""
+
 import io
-import json
 import struct
 import wave
 
 import pytest
 
-from garak.generators.nim import DuplexCapable, NVDuplexChat
+from garak.attempt import Conversation, Message, Turn
+from garak.generators.nim import DuplexCapable, NVDuplexChat, NVVoiceChat
 from garak.resources.audio.session import (
     ReactivePattern,
     SessionEvent,
-    SessionResult,
     SessionScript,
 )
 
@@ -36,7 +39,7 @@ def _make_wav(duration_ms: int = 200) -> bytes:
     return buf.getvalue()
 
 
-def _vc_config(model_name="test-model", **extra):
+def _dc_config(**extra):
     return {
         "generators": {
             "nim": {
@@ -50,27 +53,22 @@ def _vc_config(model_name="test-model", **extra):
     }
 
 
-class _FakeResponse:
-    def __init__(self, content="Hello from agent.", status_code=200):
-        self.status_code = status_code
-        self._content = content
-        self.headers = {}
+def _make_gen(monkeypatch, responses, capture=None):
+    """Build an NVDuplexChat whose _call_model returns queued text responses."""
+    gen = NVDuplexChat("test-model", config_root=_dc_config(trailing_silence_ms=0))
+    resp_iter = iter(responses)
 
-    def raise_for_status(self):
-        if self.status_code >= 400:
-            raise Exception(f"HTTP {self.status_code}")
+    def fake_call_model(prompt, generations_this_call=1):
+        if capture is not None:
+            capture.append(prompt)
+        try:
+            text = next(resp_iter)
+        except StopIteration:
+            text = "fallback"
+        return [Message(text=text)]
 
-    def json(self):
-        return {
-            "choices": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": self._content,
-                    }
-                }
-            ]
-        }
+    monkeypatch.setattr(gen, "_call_model", fake_call_model)
+    return gen
 
 
 # ---------------------------------------------------------------------------
@@ -85,14 +83,19 @@ class TestDuplexCapable:
     def test_supports_duplex_attribute(self):
         assert NVDuplexChat.supports_duplex is True
 
-    def test_non_duplex_generator_not_instance(self):
-        from garak.generators.nim import NVVoiceChat
+    def test_nvvoicechat_not_duplex_capable(self):
+        assert not issubclass(NVVoiceChat, DuplexCapable)
 
-        assert not isinstance(NVVoiceChat.__new__(NVVoiceChat), DuplexCapable)
+    def test_output_modality_text_only(self):
+        assert NVDuplexChat.modality["out"] == {"text"}
+
+    def test_no_asr_params(self):
+        assert "asr_uri" not in NVDuplexChat.DEFAULT_PARAMS
+        assert "asr_model" not in NVDuplexChat.DEFAULT_PARAMS
 
 
 # ---------------------------------------------------------------------------
-# NVDuplexChat._resolve_event_audio
+# _resolve_event_audio
 # ---------------------------------------------------------------------------
 
 
@@ -118,97 +121,19 @@ class TestResolveEventAudio:
         p = tmp_path / "test.wav"
         p.write_bytes(b"file-bytes")
         event = SessionEvent(
-            stream="user",
-            offset_s=0.0,
-            audio_data=b"inline-bytes",
-            audio_path=str(p),
+            stream="user", offset_s=0.0, audio_data=b"inline-bytes", audio_path=str(p)
         )
         assert self.gen._resolve_event_audio(event) == b"inline-bytes"
 
 
 # ---------------------------------------------------------------------------
-# NVDuplexChat.run_session
+# run_session
 # ---------------------------------------------------------------------------
 
 
-class TestTranscribeResponseAudio:
-    def test_asr_not_called_when_asr_uri_unset(self, monkeypatch):
-        """Without asr_uri configured, blank content is returned as-is."""
-        gen = NVDuplexChat.__new__(NVDuplexChat)
-        gen.asr_uri = None
-        # _transcribe_response_audio should never be reached
-        assert gen.asr_uri is None
-
-    def test_transcribe_called_on_blank_content_with_asr_uri(self, monkeypatch):
-        gen = NVDuplexChat("test-model", config_root=_vc_config())
-        gen.trailing_silence_ms = 0
-        gen.asr_uri = "https://asr.test/v1"
-        gen.asr_model = "nvidia/parakeet-1-1b-rnnt-multilingual"
-        gen.asr_language = "en-US"
-
-        asr_called = []
-
-        def fake_transcribe(audio_b64: str) -> str:
-            asr_called.append(audio_b64)
-            return "I cannot help with that."
-
-        monkeypatch.setattr(gen, "_transcribe_response_audio", fake_transcribe)
-
-        # Fake response: blank content but audio data present
-        import base64 as _b64
-        dummy_audio = _b64.b64encode(b"RIFF....WAVE").decode()
-
-        def fake_post(*, headers, payload):
-            return _FakeResponse.__new__(_FakeResponse).__class__(
-                **{
-                    **_FakeResponse.__init__.__code__.co_varnames  # just use the class directly
-                }
-            ) if False else type("R", (), {
-                "status_code": 200,
-                "raise_for_status": lambda self: None,
-                "json": lambda self: {
-                    "choices": [{"message": {"role": "assistant", "content": "", "audio": {"data": dummy_audio}}}]
-                },
-            })()
-
-        monkeypatch.setattr(gen, "_post_completion", fake_post)
-
-        from garak.resources.audio.session import SessionEvent, SessionScript
-
-        import io, struct, wave as _wave
-        buf = io.BytesIO()
-        with _wave.open(buf, "wb") as wf:
-            wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(16000)
-            wf.writeframes(struct.pack("<100h", *([0]*100)))
-        wav_bytes = buf.getvalue()
-
-        event = SessionEvent(stream="user", offset_s=0.0, audio_data=wav_bytes, label="req")
-        text, provenance = gen._send_turn(wav_bytes, [], event)
-
-        assert asr_called, "ASR transcription should have been called for blank content with audio"
-        assert text == "I cannot help with that."
-        assert provenance["asr_used"] is True
-
-
 class TestRunSession:
-    def _make_gen(self, monkeypatch, responses: list[str]):
-        gen = NVDuplexChat("test-model", config_root=_vc_config())
-        gen.trailing_silence_ms = 0   # skip silence append in tests
-
-        resp_iter = iter(responses)
-
-        def fake_post_completion(*, headers, payload):
-            try:
-                content = next(resp_iter)
-            except StopIteration:
-                content = "fallback response"
-            return _FakeResponse(content=content)
-
-        monkeypatch.setattr(gen, "_post_completion", fake_post_completion)
-        return gen
-
     def test_single_turn_populates_full_transcript(self, monkeypatch, tmp_path):
-        gen = self._make_gen(monkeypatch, ["Agent said hello."])
+        gen = _make_gen(monkeypatch, ["Agent said hello."])
         wav = tmp_path / "r.wav"
         wav.write_bytes(_make_wav())
         script = SessionScript(
@@ -218,7 +143,7 @@ class TestRunSession:
         assert "hello" in result.full_transcript
 
     def test_two_turn_session_transcript_join(self, monkeypatch, tmp_path):
-        gen = self._make_gen(monkeypatch, ["First turn.", "Second turn."])
+        gen = _make_gen(monkeypatch, ["First turn.", "Second turn."])
         wav = tmp_path / "r.wav"
         wav.write_bytes(_make_wav())
         script = SessionScript(
@@ -231,8 +156,25 @@ class TestRunSession:
         assert "First turn" in result.full_transcript
         assert "Second turn" in result.full_transcript
 
+    def test_history_accumulates_across_turns(self, monkeypatch, tmp_path):
+        """Each turn's Conversation must include all prior turns."""
+        capture = []
+        gen = _make_gen(monkeypatch, ["r1", "r2", "r3"], capture=capture)
+        wav = tmp_path / "r.wav"
+        wav.write_bytes(_make_wav())
+        script = SessionScript(
+            events=[
+                SessionEvent(stream="user", offset_s=0.0, audio_path=str(wav), label="t1"),
+                SessionEvent(stream="user", offset_s=1.0, audio_path=str(wav), label="t2"),
+                SessionEvent(stream="user", offset_s=2.0, audio_path=str(wav), label="t3"),
+            ]
+        )
+        gen.run_session(script)
+        # turn 1: 1 turn; turn 2: prior user+assistant + new user = 3; turn 3: 5
+        assert [len(c.turns) for c in capture] == [1, 3, 5]
+
     def test_pre_post_split_on_interrupt_label(self, monkeypatch, tmp_path):
-        gen = self._make_gen(monkeypatch, ["I cannot do that.", "Okay, proceeding."])
+        gen = _make_gen(monkeypatch, ["I cannot do that.", "Okay, proceeding."])
         wav = tmp_path / "r.wav"
         wav.write_bytes(_make_wav())
         script = SessionScript(
@@ -246,8 +188,8 @@ class TestRunSession:
         assert "cannot" in result.pre_interrupt_transcript
         assert "proceeding" in result.post_interrupt_transcript
 
-    def test_reactive_trigger_notes_triggered_by(self, monkeypatch, tmp_path):
-        gen = self._make_gen(monkeypatch, ["I cannot help.", "Sure thing."])
+    def test_reactive_trigger_records_triggered_by(self, monkeypatch, tmp_path):
+        gen = _make_gen(monkeypatch, ["I cannot help.", "Sure thing."])
         wav = tmp_path / "r.wav"
         wav.write_bytes(_make_wav())
         trigger = ReactivePattern(pattern=r"i cannot", offset_ms=0)
@@ -256,34 +198,40 @@ class TestRunSession:
             events=[
                 SessionEvent(stream="user", offset_s=0.0, audio_path=str(wav), label="req"),
                 SessionEvent(
-                    stream="user",
-                    offset_s=5.0,
-                    audio_path=str(wav),
-                    label="interrupt",
-                    trigger=trigger,
+                    stream="user", offset_s=5.0, audio_path=str(wav), label="interrupt", trigger=trigger
                 ),
             ],
         )
         result = gen.run_session(script)
-        interrupt_responses = [
-            e for e in result.events if e.triggered_by is not None
-        ]
-        assert len(interrupt_responses) >= 1
+        triggered = [e for e in result.events if e.triggered_by is not None]
+        assert len(triggered) >= 1
 
     def test_missing_audio_event_skipped(self, monkeypatch):
-        gen = self._make_gen(monkeypatch, ["Response."])
-        # Event has no audio source at all
+        gen = _make_gen(monkeypatch, ["Response."])
         script = SessionScript(
-            events=[
-                SessionEvent(stream="user", offset_s=0.0, label="empty")
-            ]
+            events=[SessionEvent(stream="user", offset_s=0.0, label="empty")]
         )
         result = gen.run_session(script)
-        # Should complete without crashing; full_transcript may be empty
         assert result.error is None
 
+    def test_call_model_failure_yields_empty_turn(self, monkeypatch, tmp_path):
+        gen = NVDuplexChat("test-model", config_root=_dc_config(trailing_silence_ms=0))
+
+        def boom(prompt, generations_this_call=1):
+            raise RuntimeError("endpoint down")
+
+        monkeypatch.setattr(gen, "_call_model", boom)
+        wav = tmp_path / "r.wav"
+        wav.write_bytes(_make_wav())
+        script = SessionScript(
+            events=[SessionEvent(stream="user", offset_s=0.0, audio_path=str(wav), label="req")]
+        )
+        result = gen.run_session(script)
+        # empty transcript, but no crash
+        assert result.full_transcript.strip() == ""
+
     def test_result_as_dict_structure(self, monkeypatch, tmp_path):
-        gen = self._make_gen(monkeypatch, ["Hello."])
+        gen = _make_gen(monkeypatch, ["Hello."])
         wav = tmp_path / "r.wav"
         wav.write_bytes(_make_wav())
         script = SessionScript(
@@ -292,5 +240,58 @@ class TestRunSession:
         result = gen.run_session(script)
         d = result.as_dict()
         assert "full_transcript" in d
-        assert "events" in d
         assert isinstance(d["events"], list)
+
+
+# ---------------------------------------------------------------------------
+# run_session integration with real _call_model (SDK create stubbed)
+# ---------------------------------------------------------------------------
+
+
+class TestRunSessionThroughCallModel:
+    def test_audio_flows_through_to_sdk_create(self, monkeypatch, tmp_path):
+        """End-to-end: run_session -> _call_model -> _conversation_to_list -> create."""
+        import base64
+
+        wav = tmp_path / "r.wav"
+        wav_bytes = _make_wav()
+        wav.write_bytes(wav_bytes)
+
+        gen = NVDuplexChat("test-model", config_root=_dc_config(trailing_silence_ms=0))
+
+        captured = []
+
+        class _Msg:
+            content = "I cannot help with that."
+            tool_calls = None
+
+        class _Choice:
+            message = _Msg()
+
+        class _Resp:
+            choices = [_Choice()]
+
+        def fake_create(**kwargs):
+            captured.append(kwargs)
+            return _Resp()
+
+        stub = type("_C", (), {"create": staticmethod(fake_create)})()
+        monkeypatch.setattr(gen, "generator", stub)
+
+        script = SessionScript(
+            events=[SessionEvent(stream="user", offset_s=0.0, audio_path=str(wav), label="req")]
+        )
+        result = gen.run_session(script)
+
+        assert result.full_transcript == "I cannot help with that."
+        # the SDK request carried an input_audio block with our WAV
+        messages = captured[0]["messages"]
+        audio_parts = [
+            part
+            for m in messages
+            if isinstance(m.get("content"), list)
+            for part in m["content"]
+            if part.get("type") == "input_audio"
+        ]
+        assert audio_parts, "duplex turn must send input_audio"
+        assert base64.b64decode(audio_parts[0]["input_audio"]["data"]) == wav_bytes

@@ -187,6 +187,10 @@ def test_nim_audio_transcription_rejects_inline_non_wav_bytes():
 
 # ---------------------------------------------------------------------------
 # NVVoiceChat tests
+#
+# NVVoiceChat now extends NVOpenAIChat and speaks to the target through the
+# OpenAI SDK client (self.generator.create), returning TEXT only. These tests
+# stub the SDK create call rather than requests.post.
 # ---------------------------------------------------------------------------
 
 
@@ -204,37 +208,53 @@ def _vc_config(api_key="test-key", **extra):
     }
 
 
-class _VCFakeResponse:
-    def __init__(
-        self,
-        text="Hello, I can help with that.",
-        payload=None,
-        *,
-        headers=None,
-        status_code=200,
-    ):
-        self._text = text
+class _FakeSDKMessage:
+    def __init__(self, content=None, tool_calls=None):
+        self.content = content
+        self.tool_calls = tool_calls
+
+
+class _FakeSDKChoice:
+    def __init__(self, message):
+        self.message = message
+
+
+class _FakeSDKResponse:
+    def __init__(self, content="Hello, I can help with that.", tool_calls=None):
+        self.choices = [_FakeSDKChoice(_FakeSDKMessage(content, tool_calls))]
+
+
+class _FakeToolCall:
+    def __init__(self, payload):
         self._payload = payload
-        self.headers = headers or {}
-        self.status_code = status_code
 
-    def raise_for_status(self):
-        return None
+    def model_dump(self):
+        return self._payload
 
-    def json(self):
-        if self._payload is not None:
-            return self._payload
-        return {
-            "choices": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": self._text,
-                        "audio": {"data": "AAAA"},
-                    }
-                }
-            ]
-        }
+
+def _stub_create(gen, monkeypatch, *, response=None, capture=None, error=None):
+    """Replace gen.generator with a stub exposing .create()."""
+
+    def fake_create(**kwargs):
+        if capture is not None:
+            capture.append(kwargs)
+        if error is not None:
+            raise error
+        return response if response is not None else _FakeSDKResponse()
+
+    stub = type("_StubCompletions", (), {"create": staticmethod(fake_create)})()
+    monkeypatch.setattr(gen, "generator", stub)
+    return gen
+
+
+def _audio_block(messages):
+    """Return the input_audio dict from the last user message's content list."""
+    for msg in reversed(messages):
+        if msg["role"] == "user" and isinstance(msg["content"], list):
+            for part in msg["content"]:
+                if part.get("type") == "input_audio":
+                    return part["input_audio"]
+    return None
 
 
 def test_nv_voice_chat_reports_supported_audio_formats():
@@ -242,476 +262,175 @@ def test_nv_voice_chat_reports_supported_audio_formats():
     assert NVVoiceChat.supported_formats("image") == set()
 
 
+def test_nv_voice_chat_output_modality_is_text_only():
+    assert NVVoiceChat.modality["out"] == {"text"}
+
+
 def test_nv_voice_chat_requires_model_name():
     with pytest.raises(ValueError, match="requires model name"):
         NVVoiceChat(config_root=_vc_config())
 
 
-def test_nv_voice_chat_posts_audio_file(monkeypatch, tmp_path):
+def test_nv_voice_chat_sends_input_audio_and_reads_text(monkeypatch, tmp_path):
     import base64
 
     wav_bytes = _make_wav()
     audio_path = tmp_path / "question.wav"
     audio_path.write_bytes(wav_bytes)
-    captured = []
 
-    def fake_post(url, *, headers, json, timeout):
-        captured.append(
-            {"url": url, "headers": headers, "json": json, "timeout": timeout}
-        )
-        return _VCFakeResponse()
+    capture = []
+    gen = NVVoiceChat("voice-chat", config_root=_vc_config(trailing_silence_ms=0))
+    _stub_create(gen, monkeypatch, capture=capture)
 
-    monkeypatch.setattr("garak.generators.nim.requests.post", fake_post)
-
-    generator = NVVoiceChat(
-        name="voice-chat", config_root=_vc_config(trailing_silence_ms=0)
-    )
-    result = generator._call_model(
-        Conversation([Turn("user", Message("say hello", data_path=str(audio_path)))])
+    result = gen._call_model(
+        Conversation([Turn("user", Message("ask", data_path=str(audio_path)))])
     )
 
     assert result[0].text == "Hello, I can help with that."
-    req = captured[0]
-    assert req["url"] == "https://shim.nvcf.nvidia.com/v1/chat/completions"
-    assert req["headers"]["Authorization"] == "Bearer test-key"
-    assert req["json"]["model"] == "voice-chat"
-    assert req["json"]["generate_audio"] is True
-    content = req["json"]["messages"][0]["content"]
-    assert content[0] == {
-        "type": "text",
-        "text": "say hello",
-    }, "per-attempt text accompanies its audio when no override is configured"
-    assert content[1]["type"] == "input_audio"
-    assert content[1]["input_audio"]["format"] == "wav"
-    assert content[1]["input_audio"]["data"] == base64.b64encode(wav_bytes).decode()
+    block = _audio_block(capture[0]["messages"])
+    assert block is not None, "request must carry an input_audio block"
+    assert block["format"] == "wav"
+    assert base64.b64decode(block["data"]) == wav_bytes
 
 
-def test_nv_voice_chat_preserves_sanitised_response_provenance(monkeypatch, tmp_path):
-    audio_path = tmp_path / "question.wav"
+def test_nv_voice_chat_forwards_generate_audio_in_extra_body(monkeypatch, tmp_path):
+    audio_path = tmp_path / "q.wav"
     audio_path.write_bytes(_make_wav())
-    response = _VCFakeResponse(
-        payload={
-            "id": "completion-one",
-            "model": "voice-chat",
-            "choices": [
-                {
-                    "message": {
-                        "content": "Natural language processing handles language.",
-                        "audio": {"data": "AAAA"},
-                    }
-                }
-            ],
-            "usage": {
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-                "total_tokens": 0,
-            },
-        },
-        headers={
-            "nvcf-reqid": "request-one",
-            "Authorization": "must-not-be-recorded",
-        },
-    )
-    monkeypatch.setattr(
-        "garak.generators.nim.requests.post", lambda *args, **kwargs: response
-    )
+    capture = []
+    gen = NVVoiceChat("voice-chat", config_root=_vc_config(trailing_silence_ms=0))
+    _stub_create(gen, monkeypatch, capture=capture)
 
-    generator = NVVoiceChat(
-        name="voice-chat", config_root=_vc_config(trailing_silence_ms=0)
-    )
-    result = generator._call_model(
+    gen._call_model(
         Conversation([Turn("user", Message("ask", data_path=str(audio_path)))])
     )
-
-    provenance = result[0].notes["nvvoicechat_response"]
-    assert provenance["http_status"] == 200, "HTTP status is retained"
-    assert provenance["response_identifiers"] == {
-        "nvcf-reqid": "request-one"
-    }, "NVCF request IDs are retained"
-    assert provenance["audio_present"] is True, "response audio presence is retained"
-    assert provenance["usage"]["total_tokens"] == 0, "usage diagnostics are retained"
-    assert (
-        "Authorization" not in provenance["response_identifiers"]
-    ), "sensitive and unrelated headers are not retained"
+    assert capture[0]["extra_body"]["generate_audio"] is True
 
 
-def test_nv_voice_chat_optionally_saves_response_audio(monkeypatch, tmp_path):
-    import base64
-
-    audio_path = tmp_path / "question.wav"
+def test_nv_voice_chat_forwards_system_text_tools(monkeypatch, tmp_path):
+    audio_path = tmp_path / "q.wav"
     audio_path.write_bytes(_make_wav())
-    response_wav = _make_wav(num_samples=3200, framerate=24000)
-    response = _VCFakeResponse(
-        payload={
-            "choices": [
-                {
-                    "message": {
-                        "content": "Natural language processing handles language.",
-                        "audio": {
-                            "data": base64.b64encode(response_wav).decode("ascii")
-                        },
-                    }
-                }
-            ]
-        }
-    )
-    monkeypatch.setattr(
-        "garak.generators.nim.requests.post", lambda *args, **kwargs: response
-    )
-
-    output_dir = tmp_path / "responses"
-    generator = NVVoiceChat(
+    capture = []
+    gen = NVVoiceChat(
         "voice-chat",
         config_root=_vc_config(
             trailing_silence_ms=0,
-            response_audio_dir=str(output_dir),
+            system_prompt="You are a helper.",
+            text_prompt="Answer the audio.",
+            tools=[{"type": "function", "function": {"name": "f"}}],
+            tool_choice="auto",
         ),
     )
-    result = generator._call_model(
-        Conversation([Turn("user", Message("ask", data_path=str(audio_path)))])
+    _stub_create(gen, monkeypatch, capture=capture)
+
+    gen._call_model(
+        Conversation([Turn("user", Message("ignored", data_path=str(audio_path)))])
     )
 
-    provenance = result[0].notes["nvvoicechat_response"]
-    saved_path = Path(provenance["audio_path"])
-    assert saved_path.read_bytes() == response_wav, "response WAV is preserved"
-    assert provenance["audio_byte_size"] == len(
-        response_wav
-    ), "response byte size is retained"
-    assert len(provenance["audio_sha256"]) == 64, "response digest is retained"
-
-
-def test_nv_voice_chat_response_audio_dir_with_audio_disabled_does_not_raise(
-    monkeypatch, tmp_path
-):
-    """response_audio_dir + extra_body disabling audio must not raise."""
-    audio_path = tmp_path / "question.wav"
-    audio_path.write_bytes(_make_wav())
-    # response carries no audio because generation was disabled
-    no_audio = _VCFakeResponse(
-        payload={"choices": [{"message": {"content": "Text-only reply."}}]}
-    )
-    monkeypatch.setattr(
-        "garak.generators.nim.requests.post", lambda *args, **kwargs: no_audio
-    )
-
-    output_dir = tmp_path / "responses"
-    generator = NVVoiceChat(
-        "voice-chat",
-        config_root=_vc_config(
-            trailing_silence_ms=0,
-            response_audio_dir=str(output_dir),
-            extra_body={"generate_audio": False},
-        ),
-    )
-    result = generator._call_model(
-        Conversation([Turn("user", Message("ask", data_path=str(audio_path)))])
-    )
-
-    assert result[0].text == "Text-only reply."
-    provenance = result[0].notes["nvvoicechat_response"]
-    assert "audio_path" not in provenance, "nothing saved when audio was not requested"
-
-
-def test_nv_voice_chat_forwards_text_system_tools_and_extra_body(monkeypatch, tmp_path):
-    wav_bytes = _make_wav()
-    audio_path = tmp_path / "question.wav"
-    audio_path.write_bytes(wav_bytes)
-    captured = []
-
-    def fake_post(url, *, headers, json, timeout):
-        captured.append({"headers": headers, "json": json})
-        return _VCFakeResponse()
-
-    monkeypatch.setattr("garak.generators.nim.requests.post", fake_post)
-
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "get_stock_price",
-                "parameters": {"type": "object", "properties": {}},
-            },
-        }
+    messages = capture[0]["messages"]
+    assert messages[0] == {"role": "system", "content": "You are a helper."}
+    # user turn text part uses the configured text_prompt, overriding msg text
+    text_parts = [
+        p["text"]
+        for p in messages[-1]["content"]
+        if isinstance(p, dict) and p.get("type") == "text"
     ]
-    tool_choice = {"type": "function", "function": {"name": "get_stock_price"}}
-    generator = NVVoiceChat(
-        "voice-chat",
-        config_root=_vc_config(
-            trailing_silence_ms=0,
-            generate_audio=True,
-            system_prompt="You are a tool-using assistant.",
-            text_prompt="Use get_stock_price for the attached audio request.",
-            extra_body={"generate_audio": False, "shim_option": {"enabled": True}},
-            extra_headers={"Accept": "*/*", "User-Agent": "curl/8.7.1"},
-            tools=tools,
-            tool_choice=tool_choice,
-        ),
-    )
-    generator._call_model(
-        Conversation([Turn("user", Message("say hello", data_path=str(audio_path)))])
-    )
-
-    req = captured[0]["json"]
-    headers = captured[0]["headers"]
-    assert (
-        req["generate_audio"] is False
-    ), "extra_body should override base payload keys"
-    assert req["shim_option"] == {
-        "enabled": True
-    }, "extra_body keys should be forwarded"
-    assert req["tools"] == tools, "configured tools should be forwarded"
-    assert (
-        req["tool_choice"] == tool_choice
-    ), "configured tool choice should be forwarded"
-    assert req["messages"][0] == {
-        "role": "system",
-        "content": "You are a tool-using assistant.",
-    }
-    assert headers["Accept"] == "*/*", "extra headers should be forwarded"
-    assert (
-        headers["User-Agent"] == "curl/8.7.1"
-    ), "custom user agent should be forwarded"
-    assert (
-        headers["Authorization"] == "Bearer test-key"
-    ), "configured API key should still set authorization"
-    user_content = req["messages"][1]["content"]
-    assert user_content[0] == {
-        "type": "text",
-        "text": "Use get_stock_price for the attached audio request.",
-    }
-    assert user_content[1]["type"] == "input_audio"
+    assert text_parts == ["Answer the audio."]
+    assert capture[0]["tools"][0]["function"]["name"] == "f"
+    assert capture[0]["tool_choice"] == "auto"
 
 
 def test_nv_voice_chat_appends_trailing_silence(monkeypatch, tmp_path):
-    wav_bytes = _make_wav(num_samples=1600, framerate=16000)
-    audio_path = tmp_path / "question.wav"
-    audio_path.write_bytes(wav_bytes)
-    captured = []
-
-    def fake_post(url, *, headers, json, timeout):
-        captured.append(json)
-        return _VCFakeResponse()
-
-    monkeypatch.setattr("garak.generators.nim.requests.post", fake_post)
-
-    generator = NVVoiceChat(
-        name="voice-chat", config_root=_vc_config(trailing_silence_ms=1000)
-    )
-    generator._call_model(
-        Conversation([Turn("user", Message("ask", data_path=str(audio_path)))])
-    )
-
     import base64
+    import io
+    import wave
 
-    audio_content = next(
-        item
-        for item in captured[0]["messages"][0]["content"]
-        if item["type"] == "input_audio"
-    )
-    sent_wav = base64.b64decode(audio_content["input_audio"]["data"])
-    with wave.open(io.BytesIO(sent_wav)) as wf:
-        total_frames = wf.getnframes()
-        framerate = wf.getframerate()
-
-    # original 1600 samples + 1000ms * 16000Hz = 16000 silence samples
-    assert total_frames == 1600 + 16000
-
-
-def test_nv_voice_chat_omits_auth_header_without_api_key(monkeypatch, tmp_path):
+    wav_bytes = _make_wav(num_samples=1600, framerate=16000)
     audio_path = tmp_path / "q.wav"
-    audio_path.write_bytes(_make_wav())
-    captured = []
+    audio_path.write_bytes(wav_bytes)
+    capture = []
+    gen = NVVoiceChat("voice-chat", config_root=_vc_config(trailing_silence_ms=1000))
+    _stub_create(gen, monkeypatch, capture=capture)
 
-    def fake_post(url, *, headers, json, timeout):
-        captured.append(headers)
-        return _VCFakeResponse()
-
-    monkeypatch.setattr("garak.generators.nim.requests.post", fake_post)
-
-    generator = NVVoiceChat(
-        name="voice-chat", config_root=_vc_config(api_key="", trailing_silence_ms=0)
-    )
-    generator._call_model(
+    gen._call_model(
         Conversation([Turn("user", Message("ask", data_path=str(audio_path)))])
     )
 
-    assert "Authorization" not in captured[0]
+    block = _audio_block(capture[0]["messages"])
+    sent = base64.b64decode(block["data"])
+    with wave.open(io.BytesIO(sent)) as wf:
+        frames = wf.getnframes()
+    # original 1600 frames + 1000ms * 16000Hz = 16000 frames appended
+    assert frames == 1600 + 16000
 
 
-def test_nv_voice_chat_retries_transient_server_error(monkeypatch, tmp_path):
+def test_nv_voice_chat_empty_content_returns_empty_text(monkeypatch, tmp_path):
+    """Audio-only response (no text content) surfaces as empty text, NOT transcribed."""
     audio_path = tmp_path / "q.wav"
     audio_path.write_bytes(_make_wav())
-    responses = []
+    gen = NVVoiceChat("voice-chat", config_root=_vc_config(trailing_silence_ms=0))
+    _stub_create(gen, monkeypatch, response=_FakeSDKResponse(content=""))
 
-    def fake_post(*args, **kwargs):
-        responses.append(kwargs)
-        if len(responses) == 1:
-            failed = requests.Response()
-            failed.status_code = 500
-            failed.url = "https://shim.nvcf.nvidia.com/v1/chat/completions"
-            return failed
-        return _VCFakeResponse()
-
-    monkeypatch.setattr("garak.generators.nim.requests.post", fake_post)
-    monkeypatch.setattr("garak.generators.nim.time.sleep", lambda _: None)
-
-    generator = NVVoiceChat(
-        "voice-chat",
-        config_root=_vc_config(
-            trailing_silence_ms=0,
-            request_retries=1,
-            retry_delay_seconds=0,
-        ),
-    )
-    result = generator._call_model(
+    result = gen._call_model(
         Conversation([Turn("user", Message("ask", data_path=str(audio_path)))])
     )
-
-    assert result[0].text == "Hello, I can help with that."
-    assert len(responses) == 2, "retries one transient HTTP 500 response"
+    assert result[0].text == ""
 
 
-def test_nv_voice_chat_does_not_retry_client_error(monkeypatch, tmp_path):
+def test_nv_voice_chat_serializes_tool_calls(monkeypatch, tmp_path):
+    import json as _json
+
     audio_path = tmp_path / "q.wav"
     audio_path.write_bytes(_make_wav())
-    request_count = 0
-
-    def fake_post(*args, **kwargs):
-        nonlocal request_count
-        request_count += 1
-        failed = requests.Response()
-        failed.status_code = 400
-        failed.url = "https://shim.nvcf.nvidia.com/v1/chat/completions"
-        return failed
-
-    monkeypatch.setattr("garak.generators.nim.requests.post", fake_post)
-    generator = NVVoiceChat(
-        "voice-chat", config_root=_vc_config(trailing_silence_ms=0, request_retries=3)
+    tool_call = _FakeToolCall(
+        {"function": {"name": "get_stock_price", "arguments": '{"ticker":"NVDA"}'}}
+    )
+    gen = NVVoiceChat("voice-chat", config_root=_vc_config(trailing_silence_ms=0))
+    _stub_create(
+        gen,
+        monkeypatch,
+        response=_FakeSDKResponse(content=None, tool_calls=[tool_call]),
     )
 
-    with pytest.raises(GarakException, match="request failed"):
-        generator._call_model(
-            Conversation([Turn("user", Message("ask", data_path=str(audio_path)))])
-        )
-
-    assert request_count == 1, "fails closed on non-retryable client errors"
-
-
-def test_nv_voice_chat_rejects_missing_audio():
-    generator = NVVoiceChat("voice-chat", config_root=_vc_config())
-
-    with pytest.raises(GarakException, match="expected a prompt containing audio data"):
-        generator._call_model(Conversation([Turn("user", Message("no audio here"))]))
-
-
-def test_nv_voice_chat_rejects_non_wav_input(tmp_path):
-    """Non-WAV bytes must fail cleanly as a GarakException, not a raw wave.Error."""
-    audio_path = tmp_path / "not_audio.wav"
-    audio_path.write_bytes(b"this is not a RIFF/WAVE file")
-    generator = NVVoiceChat(
-        name="voice-chat", config_root=_vc_config()
-    )  # trailing_silence_ms default > 0
-
-    with pytest.raises(GarakException, match="could not parse audio as WAV"):
-        generator._call_model(
-            Conversation([Turn("user", Message("ask", data_path=str(audio_path)))])
-        )
-
-
-def test_nv_voice_chat_rejects_oversize_audio(tmp_path):
-    audio_path = tmp_path / "q.wav"
-    audio_path.write_bytes(_make_wav())
-    generator = NVVoiceChat(
-        "voice-chat", config_root=_vc_config(max_audio_bytes=5, trailing_silence_ms=0)
-    )
-
-    # oversize files are rejected by the stat pre-check before being read
-    with pytest.raises(GarakException, match="audio file exceeds"):
-        generator._call_model(
-            Conversation([Turn("user", Message("ask", data_path=str(audio_path)))])
-        )
-
-
-def test_nv_voice_chat_rejects_audio_oversize_after_silence(tmp_path):
-    audio_path = tmp_path / "q.wav"
-    audio_bytes = _make_wav()
-    audio_path.write_bytes(audio_bytes)
-    generator = NVVoiceChat(
-        "voice-chat",
-        config_root=_vc_config(
-            max_audio_bytes=len(audio_bytes) + 10,
-            trailing_silence_ms=1000,
-        ),
-    )
-
-    with pytest.raises(GarakException, match="after appending trailing silence"):
-        generator._call_model(
-            Conversation([Turn("user", Message("ask", data_path=str(audio_path)))])
-        )
-
-
-def test_nv_voice_chat_raises_on_missing_content_field(monkeypatch, tmp_path):
-    audio_path = tmp_path / "q.wav"
-    audio_path.write_bytes(_make_wav())
-
-    class _BadResponse:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {"choices": [{"message": {"role": "assistant"}}]}
-
-    monkeypatch.setattr(
-        "garak.generators.nim.requests.post", lambda *a, **kw: _BadResponse()
-    )
-
-    generator = NVVoiceChat(
-        name="voice-chat", config_root=_vc_config(trailing_silence_ms=0)
-    )
-    with pytest.raises(GarakException, match="response missing expected fields"):
-        generator._call_model(
-            Conversation([Turn("user", Message("ask", data_path=str(audio_path)))])
-        )
-
-
-def test_nv_voice_chat_serializes_tool_call_response(monkeypatch, tmp_path):
-    audio_path = tmp_path / "q.wav"
-    audio_path.write_bytes(_make_wav())
-    tool_call_response = {
-        "choices": [
-            {
-                "message": {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": "call_1",
-                            "type": "function",
-                            "function": {
-                                "name": "get_stock_price",
-                                "arguments": '{"ticker":"NVDA"}',
-                            },
-                        }
-                    ],
-                }
-            }
-        ]
-    }
-
-    monkeypatch.setattr(
-        "garak.generators.nim.requests.post",
-        lambda *a, **kw: _VCFakeResponse(payload=tool_call_response),
-    )
-
-    generator = NVVoiceChat(
-        name="voice-chat", config_root=_vc_config(trailing_silence_ms=0)
-    )
-    result = generator._call_model(
+    result = gen._call_model(
         Conversation([Turn("user", Message("ask", data_path=str(audio_path)))])
     )
-    parsed = json.loads(result[0].text)
-
+    parsed = _json.loads(result[0].text)
     assert parsed["tool_calls"][0]["function"]["name"] == "get_stock_price"
-    assert (
-        parsed["tool_calls"][0]["function"]["arguments"] == '{"ticker":"NVDA"}'
-    ), "tool-call arguments should be preserved for downstream detectors"
+    assert parsed["tool_calls"][0]["function"]["arguments"] == '{"ticker":"NVDA"}'
+
+
+def test_nv_voice_chat_rejects_missing_audio(monkeypatch):
+    gen = NVVoiceChat("voice-chat", config_root=_vc_config())
+    _stub_create(gen, monkeypatch)
+    with pytest.raises(GarakException, match="expected a prompt containing audio"):
+        gen._call_model(Conversation([Turn("user", Message("no audio here"))]))
+
+
+def test_nv_voice_chat_rejects_non_wav_input(monkeypatch, tmp_path):
+    audio_path = tmp_path / "q.mp3"
+    audio_path.write_bytes(b"ID3")
+    gen = NVVoiceChat("voice-chat", config_root=_vc_config())
+    _stub_create(gen, monkeypatch)
+    with pytest.raises(GarakException, match="expected one of"):
+        gen._call_model(
+            Conversation([Turn("user", Message("ask", data_path=str(audio_path)))])
+        )
+
+
+def test_nv_voice_chat_rejects_oversize_audio(monkeypatch, tmp_path):
+    audio_path = tmp_path / "q.wav"
+    audio_path.write_bytes(_make_wav())
+    gen = NVVoiceChat(
+        "voice-chat", config_root=_vc_config(trailing_silence_ms=0, max_audio_bytes=1)
+    )
+    _stub_create(gen, monkeypatch)
+    with pytest.raises(GarakException, match="exceeds"):
+        gen._call_model(
+            Conversation([Turn("user", Message("ask", data_path=str(audio_path)))])
+        )
+
+
+def test_nv_voice_chat_has_no_audio_output_params():
+    """Audio-output handling was removed; these params must not exist."""
+    assert "response_audio_dir" not in NVVoiceChat.DEFAULT_PARAMS
+    assert "asr_uri" not in NVVoiceChat.DEFAULT_PARAMS

@@ -3,15 +3,11 @@
 
 """NVIDIA NIM Microservice LLM Interface"""
 
-import base64
-import hashlib
 import io
 import json
 import logging
 import mimetypes
 from pathlib import Path
-import re
-import time
 from typing import List, Optional, Union
 import wave
 
@@ -164,389 +160,6 @@ class NVAudioTranscription(Generator):
             Message(
                 text=response_json["text"],
                 lang=response_json.get("language_code", self.language),
-            )
-        ]
-
-
-class NVVoiceChat(Generator):
-    """Speech-to-speech target via an OpenAI-compatible chat-completions shim.
-
-    Connects to a ``/v1/chat/completions`` endpoint that accepts base64-encoded
-    WAV audio and returns a text transcript (and optionally a WAV audio reply).
-
-    Works against any OpenAI-compatible proxy that accepts ``input_audio``
-    content.  Point ``uri`` at the shim's ``/v1`` base URL, set ``--target_name``
-    to the model the shim serves, and set ``NIM_API_KEY`` (leave it blank if the
-    endpoint requires no authentication).
-
-    Some targets need trailing silence at the end of the audio so they have time
-    to finish the response before the stream closes.  ``trailing_silence_ms``
-    controls how much is appended; set to 0 to disable.
-
-    Request payload shape::
-
-        {
-          "model": "<model-name>",
-          "messages": [{
-            "role": "user",
-            "content": [{
-              "type": "input_audio",
-              "input_audio": {"data": "<base64-wav>", "format": "wav"}
-            }]
-          }],
-          "generate_audio": true
-        }
-
-    The text reply is taken from ``choices[0].message.content``; the audio
-    reply (base64 WAV) is available in ``choices[0].message.audio.data`` but
-    is not surfaced by default.
-    """
-
-    ENV_VAR = "NIM_API_KEY"
-    DEFAULT_PARAMS = Generator.DEFAULT_PARAMS | {
-        "uri": "https://integrate.api.nvidia.com/v1",
-        "audio_format": "wav",
-        "generate_audio": True,
-        "request_timeout": 120,
-        "request_retries": 0,
-        "retry_delay_seconds": 5.0,
-        "retry_max_delay_seconds": 30.0,
-        "retry_status_codes": (500, 502, 503, 504),
-        "max_audio_bytes": 25_000_000,
-        "trailing_silence_ms": 2000,
-        "system_prompt": None,
-        "text_prompt": None,
-        "tools": None,
-        "tool_choice": None,
-        "extra_body": {},
-        "extra_headers": {},
-        "response_audio_dir": None,
-    }
-    active = True
-    supports_multiple_generations = False
-    generator_family_name = "NVVoiceChat"
-    modality = {"in": {"audio", "text"}, "out": {"text"}}
-    audio_formats = {"wav"}
-
-    def __init__(self, name="", config_root=_config):
-        # The name may arrive positionally OR via config (--target_name /
-        # generator option file). super().__init__ applies config, so check
-        # self.name AFTER it, not the positional arg (which garak leaves empty).
-        super().__init__(name, config_root=config_root)
-        if not getattr(self, "name", None):
-            raise ValueError(
-                f"{self.generator_family_name} requires model name to be set, "
-                "e.g. --target_name <model-served-by-the-shim>"
-            )
-
-    def _completions_url(self) -> str:
-        return f"{self.uri.rstrip('/')}/chat/completions"
-
-    def _post_completion(self, *, headers: dict, payload: dict):
-        retries = int(self.request_retries)
-        if retries < 0:
-            raise GarakException(
-                f"{self.__class__.__name__} request_retries must not be negative."
-            )
-        retry_status_codes = {int(code) for code in self.retry_status_codes}
-        for request_index in range(retries + 1):
-            try:
-                response = requests.post(
-                    self._completions_url(),
-                    headers=headers,
-                    json=payload,
-                    timeout=self.request_timeout,
-                )
-                response.raise_for_status()
-                return response
-            except requests.exceptions.RequestException as exc:
-                status_code = (
-                    exc.response.status_code if exc.response is not None else None
-                )
-                retryable = status_code in retry_status_codes or isinstance(
-                    exc,
-                    (
-                        requests.exceptions.ConnectionError,
-                        requests.exceptions.Timeout,
-                    ),
-                )
-                if not retryable or request_index >= retries:
-                    raise GarakException(
-                        f"{self.__class__.__name__} request failed."
-                    ) from exc
-                delay = min(
-                    float(self.retry_delay_seconds) * (2**request_index),
-                    float(self.retry_max_delay_seconds),
-                )
-                logging.warning(
-                    "%s transient request failure%s; retrying %s/%s in %.1fs.",
-                    self.__class__.__name__,
-                    f" with HTTP {status_code}" if status_code is not None else "",
-                    request_index + 1,
-                    retries,
-                    delay,
-                )
-                time.sleep(delay)
-
-        raise GarakException(f"{self.__class__.__name__} request failed.")
-
-    def _audio_message(self, prompt: Conversation) -> Message:
-        if not isinstance(prompt, Conversation):
-            raise GarakException(
-                f"{self.__class__.__name__} expected a Conversation prompt."
-            )
-        for turn in reversed(prompt.turns):
-            msg = turn.content
-            if msg.data_path is not None or msg.data is not None:
-                return msg
-        raise GarakException(
-            f"{self.__class__.__name__} expected a prompt containing audio data."
-        )
-
-    @staticmethod
-    def _response_provenance(response, response_json: dict, response_message: dict):
-        response_headers = getattr(response, "headers", {})
-        identifiers = (
-            {
-                key: value
-                for key, value in response_headers.items()
-                if any(
-                    marker in key.lower()
-                    for marker in ("request-id", "reqid", "trace", "correlation")
-                )
-            }
-            if hasattr(response_headers, "items")
-            else {}
-        )
-        audio = response_message.get("audio")
-        provenance = {
-            "http_status": getattr(response, "status_code", None),
-            "response_identifiers": identifiers,
-            "audio_present": isinstance(audio, dict) and bool(audio.get("data")),
-        }
-        for key in ("id", "model", "created", "system_fingerprint"):
-            if key in response_json:
-                provenance[key] = response_json[key]
-        if isinstance(response_json.get("usage"), dict):
-            provenance["usage"] = response_json["usage"]
-        return provenance
-
-    def _audio_requested(self) -> bool:
-        """Whether audio output was actually requested for this call.
-
-        ``extra_body`` may override ``generate_audio``; if audio was not
-        requested there is nothing to save and no error to raise.
-        """
-        if isinstance(self.extra_body, dict) and "generate_audio" in self.extra_body:
-            return bool(self.extra_body["generate_audio"])
-        return bool(self.generate_audio)
-
-    def _save_response_audio(self, response_message: dict) -> dict:
-        if self.response_audio_dir is None:
-            return {}
-
-        audio = response_message.get("audio")
-        encoded_audio = audio.get("data") if isinstance(audio, dict) else None
-        if not isinstance(encoded_audio, str) or not encoded_audio:
-            if self._audio_requested():
-                raise GarakException(
-                    f"{self.__class__.__name__} response omitted requested audio."
-                )
-            return {}
-
-        import base64
-        import binascii
-
-        try:
-            audio_bytes = base64.b64decode(encoded_audio, validate=True)
-        except (ValueError, binascii.Error) as exc:
-            raise GarakException(
-                f"{self.__class__.__name__} response audio was not valid base64."
-            ) from exc
-        if not (audio_bytes.startswith(b"RIFF") and audio_bytes[8:12] == b"WAVE"):
-            raise GarakException(
-                f"{self.__class__.__name__} response audio was not a WAV file."
-            )
-
-        digest = hashlib.sha256(audio_bytes, usedforsecurity=False).hexdigest()
-        output_dir = Path(self.response_audio_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / f"voicechat-response-{digest[:16]}.wav"
-        if not output_path.exists():
-            output_path.write_bytes(audio_bytes)
-        return {
-            "audio_path": str(output_path),
-            "audio_sha256": digest,
-            "audio_byte_size": len(audio_bytes),
-        }
-
-    @staticmethod
-    def _append_wav_silence(wav_bytes: bytes, silence_ms: int) -> bytes:
-        """Return wav_bytes with silence_ms milliseconds of silence appended."""
-        import io
-        import wave
-
-        with wave.open(io.BytesIO(wav_bytes)) as wf:
-            params = wf.getparams()
-            original_frames = wf.readframes(wf.getnframes())
-
-        silence_frames = int(params.framerate * silence_ms / 1000)
-        silence_bytes = b"\x00" * silence_frames * params.nchannels * params.sampwidth
-
-        buf = io.BytesIO()
-        with wave.open(buf, "wb") as wf_out:
-            wf_out.setparams(params)
-            wf_out.writeframes(original_frames + silence_bytes)
-        return buf.getvalue()
-
-    def _call_model(
-        self, prompt: Conversation, generations_this_call: int = 1
-    ) -> List[Union[Message, None]]:
-        import base64
-        import wave
-
-        assert (
-            generations_this_call == 1
-        ), "generations_per_call / n > 1 is not supported"
-
-        message = self._audio_message(prompt)
-        if message.data_path is not None:
-            audio_path = Path(message.data_path)
-            if not audio_path.is_file():
-                raise GarakException(
-                    f"{self.__class__.__name__} audio file not found: {audio_path}"
-                )
-            if audio_path.suffix.lower().lstrip(".") not in self.audio_formats:
-                raise GarakException(
-                    f"{self.__class__.__name__} expected one of "
-                    f"{sorted(self.audio_formats)} audio formats: {audio_path}"
-                )
-            if audio_path.stat().st_size > self.max_audio_bytes:
-                raise GarakException(
-                    f"{self.__class__.__name__} audio file exceeds "
-                    f"{self.max_audio_bytes} bytes: {audio_path}"
-                )
-            raw = audio_path.read_bytes()
-        else:
-            raw = message.data
-
-        if len(raw) > self.max_audio_bytes:
-            raise GarakException(
-                f"{self.__class__.__name__} audio data exceeds "
-                f"{self.max_audio_bytes} bytes."
-            )
-
-        if self.trailing_silence_ms > 0:
-            try:
-                raw = self._append_wav_silence(raw, self.trailing_silence_ms)
-            except (wave.Error, EOFError) as exc:
-                raise GarakException(
-                    f"{self.__class__.__name__} could not parse audio as WAV "
-                    f"to append trailing silence."
-                ) from exc
-            if len(raw) > self.max_audio_bytes:
-                raise GarakException(
-                    f"{self.__class__.__name__} audio data exceeds "
-                    f"{self.max_audio_bytes} bytes after appending trailing silence."
-                )
-
-        audio_b64 = base64.b64encode(raw).decode()
-        messages = []
-        if self.system_prompt:
-            if not isinstance(self.system_prompt, str):
-                raise GarakException(
-                    f"{self.__class__.__name__} system_prompt must be a string."
-                )
-            messages.append({"role": "system", "content": self.system_prompt})
-
-        user_content = []
-        effective_text_prompt = (
-            self.text_prompt if self.text_prompt is not None else message.text
-        )
-        if effective_text_prompt:
-            if not isinstance(effective_text_prompt, str):
-                raise GarakException(
-                    f"{self.__class__.__name__} text_prompt must be a string."
-                )
-            user_content.append({"type": "text", "text": effective_text_prompt})
-        user_content.append(
-            {
-                "type": "input_audio",
-                "input_audio": {
-                    "data": audio_b64,
-                    "format": self.audio_format,
-                },
-            }
-        )
-        messages.append({"role": "user", "content": user_content})
-
-        payload = {
-            "model": self.name,
-            "messages": messages,
-            "generate_audio": self.generate_audio,
-        }
-        if self.extra_body:
-            if not isinstance(self.extra_body, dict):
-                raise GarakException(
-                    f"{self.__class__.__name__} extra_body must be a dictionary."
-                )
-            payload.update(self.extra_body)
-        if self.tools is not None:
-            payload["tools"] = self.tools
-        if self.tool_choice is not None:
-            payload["tool_choice"] = self.tool_choice
-
-        headers = {"Content-Type": "application/json"}
-        if self.extra_headers:
-            if not isinstance(self.extra_headers, dict):
-                raise GarakException(
-                    f"{self.__class__.__name__} extra_headers must be a dictionary."
-                )
-            headers.update(self.extra_headers)
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-
-        try:
-            response = self._post_completion(headers=headers, payload=payload)
-            response_json = response.json()
-        except ValueError as exc:
-            raise GarakException(
-                f"{self.__class__.__name__} response was not JSON."
-            ) from exc
-
-        try:
-            response_message = response_json["choices"][0]["message"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise GarakException(
-                f"{self.__class__.__name__} response missing expected fields."
-            ) from exc
-
-        if "content" not in response_message and "tool_calls" not in response_message:
-            raise GarakException(
-                f"{self.__class__.__name__} response missing expected fields."
-            )
-
-        tool_calls = response_message.get("tool_calls")
-        text = response_message.get("content")
-        if tool_calls:
-            text_payload = {"tool_calls": tool_calls}
-            if isinstance(text, str) and text:
-                text_payload["content"] = text
-            text = json.dumps(text_payload, sort_keys=True)
-
-        if not isinstance(text, str):
-            raise GarakException(
-                f"{self.__class__.__name__} response content was not a string."
-            )
-
-        provenance = self._response_provenance(
-            response, response_json, response_message
-        )
-        provenance.update(self._save_response_audio(response_message))
-        return [
-            Message(
-                text=text,
-                notes={"nvvoicechat_response": provenance},
             )
         ]
 
@@ -783,11 +396,288 @@ class DuplexCapable:
 
     supports_duplex: bool = True
 
-    def run_session(
-        self,
-        script: "garak.resources.audio.session.SessionScript",
-    ) -> "garak.resources.audio.session.SessionResult":
+    def run_session(self, script):
         raise NotImplementedError
+
+
+class NVVoiceChat(NVOpenAIChat):
+    """Speech-to-text target: send audio to an OpenAI-compatible S2S chat shim.
+
+    Sends base64-encoded WAV audio as an ``input_audio`` content block to a
+    ``/v1/chat/completions`` endpoint and reads the target's **text** transcript
+    from ``choices[0].message.content``.  Per garak's convention the generator's
+    output modality is text only -- the target (or its shim) is responsible for
+    returning a text transcript of whatever it spoke.  This generator does not
+    receive, save, or transcribe audio responses; doing so would make the test
+    measure the target *as interpreted by a transcription provider* rather than
+    the target itself.
+
+    Extends :class:`NVOpenAIChat` and reuses the OpenAI SDK client, so it follows
+    the same target-communication pattern as ``nim.Vision`` / ``nim.NVMultimodal``.
+    Point ``uri`` at the shim's ``/v1`` base URL, set ``--target_name`` to the
+    model the shim serves, and set ``NIM_API_KEY`` (leave blank if the endpoint
+    needs no auth).
+
+    Some targets need trailing silence at the end of the audio so they have time
+    to finish the response before the stream closes; ``trailing_silence_ms``
+    controls how much is appended (set to 0 to disable).  ``generate_audio`` is
+    forwarded in the request body for shims that require it to trigger the S2S
+    pipeline, but any returned audio is ignored.
+    """
+
+    ENV_VAR = "NIM_API_KEY"
+    DEFAULT_PARAMS = NVOpenAIChat.DEFAULT_PARAMS | {
+        "audio_format": "wav",
+        "generate_audio": True,
+        "max_audio_bytes": 25_000_000,
+        "trailing_silence_ms": 2000,
+        "system_prompt": None,
+        "text_prompt": None,
+        "tools": None,
+        "tool_choice": None,
+        "extra_body": {},
+        "extra_headers": {},
+        # Slow S2S endpoints need a long per-request timeout; the OpenAI SDK
+        # client handles retry/backoff on 429/5xx/connection errors internally,
+        # so request_retries maps to the client's max_retries.
+        "request_timeout": 120,
+        "request_retries": 2,
+        # NVVoiceChat sends a deliberately minimal request; sampling params are
+        # suppressed because voice shims typically reject them.
+        "suppressed_params": {
+            "n",
+            "frequency_penalty",
+            "presence_penalty",
+            "timeout",
+            "temperature",
+            "top_p",
+            "top_k",
+            "stop",
+            "seed",
+            "max_tokens",
+        },
+        "vary_seed_each_call": False,
+        "vary_temp_each_call": False,
+    }
+    active = True
+    supports_multiple_generations = False
+    generator_family_name = "NVVoiceChat"
+    modality = {"in": {"audio", "text"}, "out": {"text"}}
+    audio_formats = {"wav"}
+
+    def __init__(self, name="", config_root=_config):
+        # Bypass NVOpenAIChat's org/model slash heuristic -- S2S shim model
+        # names need not be slash-formatted. OpenAICompatible.__init__ still
+        # enforces that a model name is set (raises if empty) and builds the SDK
+        # client.
+        OpenAICompatible.__init__(self, name, config_root=config_root)
+
+    def _load_unsafe(self):
+        # Unlike NVOpenAIChat, do not enumerate models over the network when the
+        # name is unset — voice shims may not implement /models, and we want a
+        # clean, offline error message. Wire the configured timeout / retries
+        # into the SDK client (slow S2S endpoints need a long timeout).
+        self.client = openai.OpenAI(
+            base_url=self.uri,
+            api_key=self.api_key,
+            timeout=getattr(self, "request_timeout", 120),
+            max_retries=getattr(self, "request_retries", 2),
+        )
+        if self.name in ("", None):
+            raise ValueError(
+                f"{self.generator_family_name} requires model name to be set, "
+                "e.g. --target_name <model-served-by-the-shim>"
+            )
+        self.generator = self.client.chat.completions
+
+    def _audio_message(self, prompt: Conversation) -> Union[Message, None]:
+        if not isinstance(prompt, Conversation):
+            raise GarakException(
+                f"{self.__class__.__name__} expected a Conversation prompt."
+            )
+        for turn in reversed(prompt.turns):
+            msg = turn.content
+            if msg.data_path is not None or msg.data is not None:
+                return msg
+        return None
+
+    def _validate_audio_size(self, raw: bytes, context: str = "") -> None:
+        if len(raw) > self.max_audio_bytes:
+            raise GarakException(
+                f"{self.__class__.__name__} audio exceeds "
+                f"{self.max_audio_bytes} bytes{context}."
+            )
+
+    @staticmethod
+    def _append_wav_silence(wav_bytes: bytes, silence_ms: int) -> bytes:
+        """Return wav_bytes with silence_ms milliseconds of silence appended."""
+        with wave.open(io.BytesIO(wav_bytes)) as wf:
+            params = wf.getparams()
+            original_frames = wf.readframes(wf.getnframes())
+
+        silence_frames = int(params.framerate * silence_ms / 1000)
+        silence_bytes = b"\x00" * silence_frames * params.nchannels * params.sampwidth
+
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf_out:
+            wf_out.setparams(params)
+            wf_out.writeframes(original_frames + silence_bytes)
+        return buf.getvalue()
+
+    def _prepare_prompt(self, prompt: Conversation) -> Union[Conversation, None]:
+        """Validate audio and inline it (with optional trailing silence).
+
+        Returns a Conversation whose last audio-bearing message carries the
+        resolved WAV bytes inline so ``OpenAICompatible._conversation_to_list``
+        emits an ``input_audio`` content block. The generator-level
+        ``text_prompt`` overrides the message text when set. Non-audio prompts
+        pass through unchanged (and will be rejected downstream).
+        """
+        audio_msg = self._audio_message(prompt)
+        if audio_msg is None:
+            raise GarakException(
+                f"{self.__class__.__name__} expected a prompt containing audio data."
+            )
+
+        if audio_msg.data_path is not None:
+            audio_path = Path(audio_msg.data_path)
+            if not audio_path.is_file():
+                raise GarakException(
+                    f"{self.__class__.__name__} audio file not found: {audio_path}"
+                )
+            fmt = audio_path.suffix.lower().lstrip(".")
+            if fmt not in self.audio_formats:
+                raise GarakException(
+                    f"{self.__class__.__name__} expected one of "
+                    f"{sorted(self.audio_formats)} audio formats: {audio_path}"
+                )
+            raw = audio_path.read_bytes()
+        else:
+            raw = audio_msg.data
+            mime = (audio_msg.data_type or (None, None))[0] or f"audio/{self.audio_format}"
+            fmt = mime.split("/")[-1]
+            if fmt == "x-wav":
+                fmt = "wav"
+            if fmt not in self.audio_formats:
+                raise GarakException(
+                    f"{self.__class__.__name__} expected one of "
+                    f"{sorted(self.audio_formats)} audio formats: {mime}"
+                )
+
+        self._validate_audio_size(raw)
+
+        if self.trailing_silence_ms and self.trailing_silence_ms > 0:
+            try:
+                raw = self._append_wav_silence(raw, self.trailing_silence_ms)
+            except (wave.Error, EOFError) as exc:
+                raise GarakException(
+                    f"{self.__class__.__name__} could not parse audio as WAV "
+                    f"to append trailing silence."
+                ) from exc
+            self._validate_audio_size(raw, " after appending trailing silence")
+
+        effective_text = (
+            self.text_prompt if self.text_prompt is not None else (audio_msg.text or "")
+        )
+        new_turns = []
+        replaced = False
+        for turn in prompt.turns:
+            if turn.content is audio_msg and not replaced:
+                new_msg = Message(
+                    text=effective_text,
+                    lang=audio_msg.lang,
+                    data_type=(f"audio/{fmt}", None),
+                )
+                new_msg.data = raw
+                new_turns.append(Turn(turn.role, new_msg))
+                replaced = True
+            else:
+                new_turns.append(turn)
+        return Conversation(new_turns)
+
+    @staticmethod
+    def _serialise_tool_calls(tool_calls, content) -> str:
+        serialised = []
+        for tc in tool_calls:
+            if hasattr(tc, "model_dump"):
+                serialised.append(tc.model_dump())
+            elif isinstance(tc, dict):
+                serialised.append(tc)
+            else:
+                serialised.append(str(tc))
+        payload = {"tool_calls": serialised}
+        if isinstance(content, str) and content:
+            payload["content"] = content
+        return json.dumps(payload, sort_keys=True, default=str)
+
+    def _call_model(
+        self, prompt: Conversation, generations_this_call: int = 1
+    ) -> List[Union[Message, None]]:
+        assert (
+            generations_this_call == 1
+        ), "generations_per_call / n > 1 is not supported"
+
+        if self.client is None:
+            self._load_unsafe()
+
+        prompt = self._prepare_prompt(prompt)
+        if prompt is None:
+            return [None]
+
+        messages = self._conversation_to_list(prompt)
+        if self.system_prompt:
+            if not isinstance(self.system_prompt, str):
+                raise GarakException(
+                    f"{self.__class__.__name__} system_prompt must be a string."
+                )
+            messages = [{"role": "system", "content": self.system_prompt}] + messages
+
+        create_args = {"model": self.name, "messages": messages}
+        extra_body = dict(self.extra_body) if isinstance(self.extra_body, dict) else {}
+        if self.generate_audio:
+            extra_body.setdefault("generate_audio", True)
+        if extra_body:
+            create_args["extra_body"] = extra_body
+        if self.extra_headers:
+            create_args["extra_headers"] = self.extra_headers
+        if self.tools is not None:
+            create_args["tools"] = self.tools
+        if self.tool_choice is not None:
+            create_args["tool_choice"] = self.tool_choice
+
+        try:
+            response = self.generator.create(**create_args)
+        except (openai.AuthenticationError, openai.PermissionDeniedError) as e:
+            msg = (
+                f"OpenAI API authentication failed (HTTP {e.status_code}); "
+                f"verify {self.key_env_var} is valid."
+            )
+            logging.error(msg)
+            raise GarakException(msg) from None
+        except openai.BadRequestError as e:
+            logging.exception(e)
+            return [None]
+        except Exception as e:
+            msg = (
+                f"{self.__class__.__name__} generation failed. Is the model name "
+                "spelled correctly and does the shim accept input_audio?"
+            )
+            logging.critical(msg, exc_info=e)
+            raise GarakException(f"\U0001f6d1 {msg}") from e
+
+        if not getattr(response, "choices", None):
+            logging.debug("%s got no choices in response", self.__class__.__name__)
+            return [None]
+
+        message = response.choices[0].message
+        tool_calls = getattr(message, "tool_calls", None)
+        content = getattr(message, "content", None)
+        if tool_calls:
+            text = self._serialise_tool_calls(tool_calls, content)
+        else:
+            text = content if isinstance(content, str) else ""
+
+        return [Message(text=text)]
 
 
 class NVDuplexChat(DuplexCapable, NVVoiceChat):
@@ -801,30 +691,18 @@ class NVDuplexChat(DuplexCapable, NVVoiceChat):
     Barge-in is modelled in *sequential simulation mode*: if a
     :class:`~garak.resources.audio.session.ReactivePattern` is set on an event
     and the previous agent response matches that pattern, the interrupt event
-    fires immediately after (no real-time interleaving).  This approximation
-    tests the same safety surface as true duplex barge-in because the model
-    sees an identical conversation prefix.
+    is recorded as triggered.  This approximation tests the same safety surface
+    as true duplex barge-in because the model sees an identical conversation
+    prefix.
+
+    Like :class:`NVVoiceChat` the output modality is text only: each turn's
+    scorable transcript comes from ``choices[0].message.content``. No audio is
+    received or transcribed by the generator.
 
     Point ``uri`` at the ``/v1`` base URL of any OpenAI-compatible
-    chat-completions shim (same as ``NVVoiceChat``) and set ``--target_name``
-    to the served model.
+    chat-completions shim and set ``--target_name`` to the served model.
     """
 
-    DEFAULT_PARAMS = NVVoiceChat.DEFAULT_PARAMS | {
-        "session_timeout": 300,
-        "turn_silence_ms": 500,   # silence appended between turns
-        "flood_count": 5,
-        "flood_interval_s": 0.64,
-        # If the target returns audio only (no text content), NVDuplexChat can
-        # fall back to an external ASR service to produce a scorable transcript.
-        # Set asr_uri to the /v1 base URL of an NVAudioTranscription-compatible
-        # endpoint (e.g. https://inference-api.nvidia.com/v1) and asr_model to
-        # the transcription model name.  Leave both as None to skip transcription
-        # and surface empty output to detectors instead.
-        "asr_uri": None,
-        "asr_model": NVAudioTranscription.DEFAULT_MODEL,
-        "asr_language": "en-US",
-    }
     generator_family_name = "NVDuplexChat"
 
     # ------------------------------------------------------------------
@@ -835,10 +713,7 @@ class NVDuplexChat(DuplexCapable, NVVoiceChat):
         from garak.resources.audio.session import SessionResult, SessionResultEvent
 
         result = SessionResult()
-        history: list[dict] = []
-
-        if self.system_prompt:
-            history.append({"role": "system", "content": self.system_prompt})
+        history_turns: list = []  # accumulated Conversation Turns (user audio + assistant text)
 
         interrupt_seen = False
         interrupt_label = getattr(script, "interrupt_label", None)
@@ -852,13 +727,28 @@ class NVDuplexChat(DuplexCapable, NVVoiceChat):
                 )
                 continue
 
-            # ---- send this turn ----------------------------------------
-            response_text, provenance = self._send_turn(audio_data, history, event)
+            # Build a user Turn carrying the audio inline. _prepare_prompt
+            # (invoked by _call_model) validates + appends trailing silence and
+            # applies text_prompt override to the last audio turn.
+            user_text = event.text if self.text_prompt is None else self.text_prompt
+            user_msg = Message(text=user_text or "", data_type=(f"audio/{self.audio_format}", None))
+            user_msg.data = audio_data
+            user_turn = Turn("user", user_msg)
 
-            t = event.offset_s
+            conversation = Conversation(history_turns + [user_turn])
+
+            try:
+                outputs = self._call_model(conversation)
+                response_text = (
+                    outputs[0].text if outputs and outputs[0] is not None else ""
+                )
+            except Exception as exc:
+                logging.warning(
+                    "NVDuplexChat: turn %r failed: %s", event.label, exc
+                )
+                response_text = ""
+
             triggered_by = None
-
-            # ---- check reactive trigger from PREVIOUS response ---------
             if (
                 event.trigger is not None
                 and result.events
@@ -868,7 +758,7 @@ class NVDuplexChat(DuplexCapable, NVVoiceChat):
 
             result.events.append(
                 SessionResultEvent(
-                    offset_s=t,
+                    offset_s=event.offset_s,
                     stream="user",
                     text="[audio]",
                     label=event.label,
@@ -876,7 +766,7 @@ class NVDuplexChat(DuplexCapable, NVVoiceChat):
             )
             result.events.append(
                 SessionResultEvent(
-                    offset_s=t,
+                    offset_s=event.offset_s,
                     stream="agent",
                     text=response_text,
                     label=f"response_to_{event.label}",
@@ -884,27 +774,14 @@ class NVDuplexChat(DuplexCapable, NVVoiceChat):
                 )
             )
 
-            # ---- update history ----------------------------------------
-            audio_b64 = base64.b64encode(audio_data).decode()
-            user_content: list[dict] = []
-            if event.text and self.text_prompt is None:
-                user_content.append({"type": "text", "text": event.text})
-            elif self.text_prompt:
-                user_content.append({"type": "text", "text": self.text_prompt})
-            user_content.append(
-                {
-                    "type": "input_audio",
-                    "input_audio": {"data": audio_b64, "format": self.audio_format},
-                }
-            )
-            history.append({"role": "user", "content": user_content})
-            history.append({"role": "assistant", "content": response_text})
+            # Store raw (silence-free) turns in history; _prepare_prompt applies
+            # trailing silence per-call to the last audio turn only.
+            history_turns.append(user_turn)
+            history_turns.append(Turn("assistant", Message(text=response_text)))
 
-            # ---- track interrupt boundary -------------------------------
             if interrupt_label and event.label == interrupt_label:
                 interrupt_seen = True
 
-        # ---- assemble transcript splits --------------------------------
         agent_responses = [e for e in result.events if e.stream == "agent"]
         result.full_transcript = " ".join(e.text for e in agent_responses)
 
@@ -929,12 +806,8 @@ class NVDuplexChat(DuplexCapable, NVVoiceChat):
 
         return result
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
     def _resolve_event_audio(self, event) -> Optional[bytes]:
-        """Return raw WAV bytes for *event*, synthesising / loading as needed."""
+        """Return raw WAV bytes for *event* from inline data or a file path."""
         if event.audio_data is not None:
             return event.audio_data
         if event.audio_path is not None:
@@ -942,167 +815,6 @@ class NVDuplexChat(DuplexCapable, NVVoiceChat):
             if not p.is_file():
                 return None
             return p.read_bytes()
-        # No pre-built audio — caller is expected to pre-synthesise and set
-        # audio_path or audio_data before calling run_session.
         return None
-
-    def _send_turn(
-        self, audio_data: bytes, history: list[dict], event
-    ) -> tuple[str, dict]:
-        """POST one audio turn with full conversation history; return (transcript, provenance)."""
-        if self.trailing_silence_ms > 0:
-            audio_data = self._append_wav_silence(audio_data, self.trailing_silence_ms)
-
-        audio_b64 = base64.b64encode(audio_data).decode()
-
-        messages = list(history)
-        user_content: list[dict] = []
-        text_label = (event.text or "") if (self.text_prompt is None) else self.text_prompt
-        if text_label:
-            user_content.append({"type": "text", "text": text_label})
-        user_content.append(
-            {
-                "type": "input_audio",
-                "input_audio": {"data": audio_b64, "format": self.audio_format},
-            }
-        )
-        messages.append({"role": "user", "content": user_content})
-
-        payload: dict = {
-            "model": self.name,
-            "messages": messages,
-            "generate_audio": self.generate_audio,
-        }
-        if self.extra_body:
-            payload.update(self.extra_body)
-        if self.tools:
-            payload["tools"] = self.tools
-        if self.tool_choice:
-            payload["tool_choice"] = self.tool_choice
-
-        headers: dict = {"Content-Type": "application/json"}
-        if self.extra_headers:
-            headers.update(self.extra_headers)
-        api_key = getattr(self, "api_key", None) or getattr(self, "ENV_VAR", None)
-        if api_key and hasattr(self, "api_key"):
-            headers["Authorization"] = f"Bearer {self.api_key}"
-
-        response = self._post_completion(headers=headers, payload=payload)
-        response_json = response.json()
-        response_message = response_json["choices"][0]["message"]
-
-        audio_field = response_message.get("audio") if isinstance(response_message.get("audio"), dict) else {}
-        audio_b64_response = audio_field.get("data", "")
-        audio_present = bool(audio_b64_response)
-
-        if response_message.get("tool_calls"):
-            text = json.dumps(
-                {
-                    "tool_calls": response_message["tool_calls"],
-                    "content": response_message.get("content"),
-                },
-                sort_keys=True,
-            )
-        else:
-            text = response_message.get("content") or ""
-
-        # If the target returned audio but no text transcript, fall back to an
-        # explicit ASR service when one is configured.  This keeps the
-        # transcription step visible in generator config rather than hidden, per
-        # garak's convention that modality conversion is not the generator's job
-        # but may be wired in as an explicit user-configured helper.
-        if not text.strip() and audio_present and self.asr_uri:
-            text = self._transcribe_response_audio(audio_b64_response)
-
-        provenance = {
-            "http_status": response.status_code,
-            "audio_present": audio_present,
-            "asr_used": bool(not (response_message.get("content") or "").strip() and audio_present and self.asr_uri),
-            "event_label": event.label,
-        }
-        return text, provenance
-
-    def _transcribe_response_audio(self, audio_b64: str) -> str:
-        """Transcribe base64 WAV from target response using the configured ASR service.
-
-        Called only when ``asr_uri`` is set.  Uses :class:`NVAudioTranscription`
-        with the configured ``asr_model`` and ``asr_language`` so the
-        transcription service is explicit and user-controlled rather than hidden
-        inside the generator.
-        """
-        import tempfile
-        from pathlib import Path
-
-        try:
-            raw = base64.b64decode(audio_b64)
-        except Exception as exc:
-            logging.warning("NVDuplexChat: could not decode response audio: %s", exc)
-            return ""
-
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp.write(raw)
-            tmp_path = tmp.name
-
-        try:
-            asr = NVAudioTranscription(
-                name=self.asr_model,
-                config_root={
-                    "generators": {
-                        "nim": {
-                            "NVAudioTranscription": {
-                                "api_key": getattr(self, "api_key", ""),
-                                "uri": self.asr_uri,
-                                "language": self.asr_language,
-                            }
-                        }
-                    }
-                },
-            )
-            from garak.attempt import Conversation, Turn, Message as _Msg
-
-            conv = Conversation([Turn("user", _Msg("transcribe", data_path=tmp_path))])
-            results = asr._call_model(conv)
-            return results[0].text if results and results[0] else ""
-        except Exception as exc:
-            logging.warning("NVDuplexChat: ASR transcription failed: %s", exc)
-            return ""
-        finally:
-            Path(tmp_path).unlink(missing_ok=True)
-
-    def _post_completion(self, *, headers: dict, payload: dict):
-        """POST to /v1/chat/completions with exponential-backoff retry."""
-        url = f"{self.uri.rstrip('/')}/chat/completions"
-        last_exc: Optional[Exception] = None
-        for attempt_index in range(self.request_retries + 1):
-            try:
-                response = requests.post(
-                    url,
-                    headers=headers,
-                    json=payload,
-                    timeout=self.request_timeout,
-                )
-                if response.status_code not in getattr(self, "retry_status_codes", ()):
-                    response.raise_for_status()
-                    return response
-            except requests.exceptions.RequestException as exc:
-                last_exc = exc
-                status = getattr(getattr(exc, "response", None), "status_code", None)
-                retryable = (
-                    status in getattr(self, "retry_status_codes", ())
-                    or isinstance(exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout))
-                )
-                if not retryable or attempt_index >= self.request_retries:
-                    raise GarakException(
-                        f"{self.__class__.__name__} request failed: {exc}"
-                    ) from exc
-                delay = min(
-                    self.retry_delay_seconds * (2 ** attempt_index),
-                    self.retry_max_delay_seconds,
-                )
-                time.sleep(delay)
-        raise GarakException(
-            f"{self.__class__.__name__} exhausted retries"
-        ) from last_exc
-
 
 DEFAULT_CLASS = "NVOpenAIChat"
