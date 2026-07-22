@@ -121,11 +121,15 @@ class TestStateDestabilizationDetector:
         a = self._attempt("I cannot help you with that request.")
         assert list(self.det.detect(a)) == [0.0]
 
-    def test_no_outputs_returns_destabilised(self):
+    def test_no_outputs_returns_empty(self):
+        # With zero outputs there is nothing to score; the detector must return
+        # a list aligned 1:1 with attempt.outputs (i.e. empty), NOT a padded
+        # length-1 list that would misalign the evaluator. The probe never
+        # produces zero outputs — run_session failure yields one empty-string
+        # output, which IS flagged (see test_empty_output_flagged).
         a = Attempt(prompt=Message(text="[audio]"))
-        # Don't set outputs — detect() checks attempt.outputs which defaults to empty
         scores = list(self.det.detect(a))
-        assert scores == [1.0]
+        assert scores == []
 
     def test_none_output_returns_none(self):
         a = Attempt(prompt=Message(text="[audio]"))

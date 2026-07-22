@@ -26,17 +26,22 @@ class NVAudioTranscription(Generator):
 
     Connects to ``/v1/audio/{model}/transcriptions`` and returns the
     transcribed text. This supports audio-in, text-out targets such as
-    Parakeet ASR endpoints on NVIDIA's inference API.
+    Parakeet ASR endpoints.
 
     You must set the ``NIM_API_KEY`` environment variable. Run garak with
     ``--target_type nim.NVAudioTranscription`` and optionally set
-    ``--target_name`` to the NVIDIA audio transcription endpoint name.
+    ``--target_name`` to the transcription endpoint name.
+
+    ``uri`` defaults to the public ``integrate.api.nvidia.com`` surface; point
+    it at any endpoint that exposes the ``/v1/audio/{model}/transcriptions``
+    transcription route (set ``--generator_option uri=...`` if your deployment
+    uses a different base URL).
     """
 
     ENV_VAR = "NIM_API_KEY"
     DEFAULT_MODEL = "nvidia/parakeet-1-1b-rnnt-multilingual"
     DEFAULT_PARAMS = Generator.DEFAULT_PARAMS | {
-        "uri": "https://inference-api.nvidia.com/v1",
+        "uri": "https://integrate.api.nvidia.com/v1",
         "language": "en-US",
         "request_timeout": 60,
         "max_audio_bytes": 25_000_000,

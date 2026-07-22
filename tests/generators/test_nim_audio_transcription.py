@@ -32,7 +32,7 @@ def _config(api_key="test-key"):
             "nim": {
                 "NVAudioTranscription": {
                     "api_key": api_key,
-                    "uri": "https://inference-api.nvidia.com/v1",
+                    "uri": "https://integrate.api.nvidia.com/v1",
                 }
             }
         }
@@ -88,7 +88,7 @@ def test_nim_audio_transcription_posts_audio_file(monkeypatch, tmp_path):
     assert requests == [
         {
             "url": (
-                "https://inference-api.nvidia.com/v1/audio/"
+                "https://integrate.api.nvidia.com/v1/audio/"
                 "nvidia/parakeet-1-1b-rnnt-multilingual/transcriptions"
             ),
             "headers": {"Authorization": "Bearer test-key"},
