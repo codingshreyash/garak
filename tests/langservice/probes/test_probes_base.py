@@ -33,6 +33,8 @@ AUDIO_PROBES = [
     "probes.audio.ToolRiskPETTS",
     "probes.audio.ToolRiskPairedSemanticPETTS",
     "probes.audio.ToolRiskSemanticPETTS",
+    "probes.audio_overlay.AudioOverlayInjection",
+    "probes.audio_suffix.AudioSuffixInjection",
 ]
 PROBES = [
     classname
