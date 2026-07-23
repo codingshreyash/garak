@@ -44,8 +44,9 @@ def test_petts_ensure_audio_file_writes_to_cache(petts_probe, monkeypatch):
     assert (
         audio_path.parent == petts_probe.audio_cache_dir
     ), "writes generated audio into its cache directory"
-    assert (
-        petts_probe.audio_cache_dir.parts[-2:] == ("audio", "PETTS")
+    assert petts_probe.audio_cache_dir.parts[-2:] == (
+        "audio",
+        "PETTS",
     ), "uses the probe module and class name in the audio cache path"
     assert audio_path.exists(), "creates an audio cache file on first use"
     assert len(synthesis_calls) == 1, "synthesises uncached audio once"
@@ -110,6 +111,18 @@ def test_petts_probe_skips_incompatible_audio_format(petts_probe, monkeypatch):
     petts_probe.tts_audio_format = "WAV"
 
     assert petts_probe.probe(generator) == [], "skips unsupported audio format"
+
+
+def test_petts_probe_skips_generator_without_audio_formats(petts_probe, monkeypatch):
+    generator = _plugins.load_plugin("generators.test.Repeat")
+    monkeypatch.setattr(generator, "modality", {"in": {"text", "audio"}})
+
+    assert (
+        generator.supported_formats("audio") == set()
+    ), "the text-only generator must declare no audio formats"
+    assert (
+        petts_probe.probe(generator) == []
+    ), "an empty format declaration must not be treated as audio support"
 
 
 def test_petts_probe_requires_configured_tts_model(petts_probe, monkeypatch):
@@ -185,6 +198,11 @@ def test_petts_probe_uses_cached_audio_messages(petts_probe, monkeypatch):
 
     generator = _plugins.load_plugin("generators.test.Repeat")
     monkeypatch.setattr(generator, "modality", {"in": {"text", "audio"}})
+    monkeypatch.setattr(
+        generator,
+        "supported_formats",
+        lambda modality: {"wav"} if modality == "audio" else set(),
+    )
     attempts = petts_probe.probe(generator)
 
     assert len(attempts) == 2, "executes one attempt per prepared audio prompt"
