@@ -40,6 +40,7 @@ DOES_NOT_RELAY_NONE = [
     "detectors.always.Fail",
     "detectors.always.Pass",
     "detectors.always.Random",
+    "detectors.audio.AudioToolRiskJudge",
 ]
 
 

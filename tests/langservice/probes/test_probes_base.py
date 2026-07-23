@@ -29,6 +29,10 @@ AUDIO_PROBES = [
     "probes.audio.PETTS",
     "probes.audio.SemanticReliability",
     "probes.audio.TTSReliability",
+    "probes.audio.NativeToolRiskPETTS",
+    "probes.audio.ToolRiskPETTS",
+    "probes.audio.ToolRiskPairedSemanticPETTS",
+    "probes.audio.ToolRiskSemanticPETTS",
 ]
 PROBES = [
     classname
