@@ -50,6 +50,13 @@ def compatible() -> Iterable[OpenAICompatible]:
                 if hasattr(module_klass, "ENV_VAR"):
                     class_instance = build_test_instance(module_klass)
                     if isinstance(class_instance, OpenAICompatible):
+                        # This fixture carries no media; exercise only targets
+                        # whose declared input boundary is text-only.
+                        modality_in = getattr(class_instance, "modality", {}).get(
+                            "in", {"text"}
+                        )
+                        if modality_in != {"text"}:
+                            continue
                         yield f"{namespace}.{klass_name}"
 
 
