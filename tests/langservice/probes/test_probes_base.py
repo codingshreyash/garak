@@ -33,6 +33,8 @@ AUDIO_PROBES = [
     "probes.audio.ToolRiskPETTS",
     "probes.audio.ToolRiskPairedSemanticPETTS",
     "probes.audio.ToolRiskSemanticPETTS",
+    "probes.audio_acoustic.AcousticVoiceBestOfN",
+    "probes.audio_bon.PairedDirect",
 ]
 PROBES = [
     classname
