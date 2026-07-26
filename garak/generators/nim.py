@@ -4,8 +4,12 @@
 """NVIDIA NIM Microservice LLM Interface"""
 
 import logging
+import io
+import json
+import wave
 from typing import List, Union
 
+from pathlib import Path
 import openai
 
 from garak import _config
@@ -234,6 +238,278 @@ class Vision(NVMultimodal):
     """
 
     modality = {"in": {"text", "image"}, "out": {"text"}}
+
+
+class NVVoiceChat(NVOpenAIChat):
+    """Speech-to-text target: send audio to an OpenAI-compatible S2S chat shim.
+
+    Sends base64-encoded WAV audio as an ``input_audio`` content block to a
+    ``/v1/chat/completions`` endpoint and reads the target's **text** transcript
+    from ``choices[0].message.content``.  Per garak's convention the generator's
+    output modality is text only -- the target (or its shim) is responsible for
+    returning a text transcript of whatever it spoke.  This generator does not
+    receive, save, or transcribe audio responses; doing so would make the test
+    measure the target *as interpreted by a transcription provider* rather than
+    the target itself.
+
+    Extends :class:`NVOpenAIChat` and reuses the OpenAI SDK client, so it follows
+    the same target-communication pattern as ``nim.Vision`` / ``nim.NVMultimodal``.
+    Point ``uri`` at the shim's ``/v1`` base URL, set ``--target_name`` to the
+    model the shim serves, and set ``NIM_API_KEY`` (leave blank if the endpoint
+    needs no auth).
+
+    Some targets need trailing silence at the end of the audio so they have time
+    to finish the response before the stream closes; ``trailing_silence_ms``
+    controls how much is appended (set to 0 to disable).  ``generate_audio`` is
+    forwarded in the request body for shims that require it to trigger the S2S
+    pipeline, but any returned audio is ignored.
+    """
+
+    ENV_VAR = "NIM_API_KEY"
+    DEFAULT_PARAMS = NVOpenAIChat.DEFAULT_PARAMS | {
+        "audio_format": "wav",
+        "generate_audio": True,
+        "max_audio_bytes": 25_000_000,
+        "trailing_silence_ms": 2000,
+        "system_prompt": None,
+        "text_prompt": None,
+        "tools": None,
+        "tool_choice": None,
+        "extra_body": {},
+        "extra_headers": {},
+        "request_timeout": 120,  # S2S endpoints can be slow
+        "request_retries": 2,
+        # sampling params suppressed; voice shims typically reject them
+        "suppressed_params": {
+            "n",
+            "frequency_penalty",
+            "presence_penalty",
+            "timeout",
+            "temperature",
+            "top_p",
+            "top_k",
+            "stop",
+            "seed",
+            "max_tokens",
+        },
+        "vary_seed_each_call": False,
+        "vary_temp_each_call": False,
+    }
+    active = True
+    supports_multiple_generations = False
+    generator_family_name = "NVVoiceChat"
+    modality = {"in": {"audio", "text"}, "out": {"text"}}
+    audio_formats = {"wav"}
+
+    def __init__(self, name="", config_root=_config):
+        # shim model names need not be slash-formatted; skip NVOpenAIChat's check
+        OpenAICompatible.__init__(self, name, config_root=config_root)
+
+    def _load_unsafe(self):
+        # voice shims may not implement /models, so don't enumerate on empty name
+        self.client = openai.OpenAI(
+            base_url=self.uri,
+            api_key=self.api_key,
+            timeout=getattr(self, "request_timeout", 120),
+            max_retries=getattr(self, "request_retries", 2),
+        )
+        if self.name in ("", None):
+            raise ValueError(
+                f"{self.generator_family_name} requires model name to be set, "
+                "e.g. --target_name <model-served-by-the-shim>"
+            )
+        self.generator = self.client.chat.completions
+
+    def _audio_message(self, prompt: Conversation) -> Union[Message, None]:
+        if not isinstance(prompt, Conversation):
+            raise GarakException(
+                f"{self.__class__.__name__} expected a Conversation prompt."
+            )
+        for turn in reversed(prompt.turns):
+            msg = turn.content
+            if msg.data_path is not None or msg.data is not None:
+                return msg
+        return None
+
+    def _validate_audio_size(self, raw: bytes, context: str = "") -> None:
+        if len(raw) > self.max_audio_bytes:
+            raise GarakException(
+                f"{self.__class__.__name__} audio exceeds "
+                f"{self.max_audio_bytes} bytes{context}."
+            )
+
+    @staticmethod
+    def _append_wav_silence(wav_bytes: bytes, silence_ms: int) -> bytes:
+        """Return wav_bytes with silence_ms milliseconds of silence appended."""
+        with wave.open(io.BytesIO(wav_bytes)) as wf:
+            params = wf.getparams()
+            original_frames = wf.readframes(wf.getnframes())
+
+        silence_frames = int(params.framerate * silence_ms / 1000)
+        silence_bytes = b"\x00" * silence_frames * params.nchannels * params.sampwidth
+
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf_out:
+            wf_out.setparams(params)
+            wf_out.writeframes(original_frames + silence_bytes)
+        return buf.getvalue()
+
+    def _prepare_prompt(self, prompt: Conversation) -> Union[Conversation, None]:
+        """Validate audio and inline it (with optional trailing silence).
+
+        Returns a Conversation whose last audio-bearing message carries the
+        resolved WAV bytes inline so ``OpenAICompatible._conversation_to_list``
+        emits an ``input_audio`` content block. The generator-level
+        ``text_prompt`` overrides the message text when set. Non-audio prompts
+        pass through unchanged (and will be rejected downstream).
+        """
+        audio_msg = self._audio_message(prompt)
+        if audio_msg is None:
+            raise GarakException(
+                f"{self.__class__.__name__} expected a prompt containing audio data."
+            )
+
+        if audio_msg.data_path is not None:
+            audio_path = Path(audio_msg.data_path)
+            if not audio_path.is_file():
+                raise GarakException(
+                    f"{self.__class__.__name__} audio file not found: {audio_path}"
+                )
+            fmt = audio_path.suffix.lower().lstrip(".")
+            if fmt not in self.audio_formats:
+                raise GarakException(
+                    f"{self.__class__.__name__} expected one of "
+                    f"{sorted(self.audio_formats)} audio formats: {audio_path}"
+                )
+            raw = audio_path.read_bytes()
+        else:
+            raw = audio_msg.data
+            mime = (audio_msg.data_type or (None, None))[
+                0
+            ] or f"audio/{self.audio_format}"
+            fmt = mime.split("/")[-1]
+            if fmt == "x-wav":
+                fmt = "wav"
+            if fmt not in self.audio_formats:
+                raise GarakException(
+                    f"{self.__class__.__name__} expected one of "
+                    f"{sorted(self.audio_formats)} audio formats: {mime}"
+                )
+
+        self._validate_audio_size(raw)
+
+        if self.trailing_silence_ms and self.trailing_silence_ms > 0:
+            try:
+                raw = self._append_wav_silence(raw, self.trailing_silence_ms)
+            except (wave.Error, EOFError) as exc:
+                raise GarakException(
+                    f"{self.__class__.__name__} could not parse audio as WAV "
+                    f"to append trailing silence."
+                ) from exc
+            self._validate_audio_size(raw, " after appending trailing silence")
+
+        effective_text = (
+            self.text_prompt if self.text_prompt is not None else (audio_msg.text or "")
+        )
+        new_turns = []
+        replaced = False
+        for turn in prompt.turns:
+            if turn.content is audio_msg and not replaced:
+                new_msg = Message(
+                    text=effective_text,
+                    lang=audio_msg.lang,
+                    data_type=(f"audio/{fmt}", None),
+                )
+                new_msg.data = raw
+                new_turns.append(Turn(turn.role, new_msg))
+                replaced = True
+            else:
+                new_turns.append(turn)
+        return Conversation(new_turns)
+
+    @staticmethod
+    def _serialise_tool_calls(tool_calls, content) -> str:
+        serialised = []
+        for tc in tool_calls:
+            if hasattr(tc, "model_dump"):
+                serialised.append(tc.model_dump())
+            elif isinstance(tc, dict):
+                serialised.append(tc)
+            else:
+                serialised.append(str(tc))
+        payload = {"tool_calls": serialised}
+        if isinstance(content, str) and content:
+            payload["content"] = content
+        return json.dumps(payload, sort_keys=True, default=str)
+
+    def _call_model(
+        self, prompt: Conversation, generations_this_call: int = 1
+    ) -> List[Union[Message, None]]:
+        assert (
+            generations_this_call == 1
+        ), "generations_per_call / n > 1 is not supported"
+
+        if self.client is None:
+            self._load_unsafe()
+
+        prompt = self._prepare_prompt(prompt)
+        if prompt is None:
+            return [None]
+
+        messages = self._conversation_to_list(prompt)
+        if self.system_prompt:
+            if not isinstance(self.system_prompt, str):
+                raise GarakException(
+                    f"{self.__class__.__name__} system_prompt must be a string."
+                )
+            messages = [{"role": "system", "content": self.system_prompt}] + messages
+
+        create_args = {"model": self.name, "messages": messages}
+        extra_body = dict(self.extra_body) if isinstance(self.extra_body, dict) else {}
+        if self.generate_audio:
+            extra_body.setdefault("generate_audio", True)
+        if extra_body:
+            create_args["extra_body"] = extra_body
+        if self.extra_headers:
+            create_args["extra_headers"] = self.extra_headers
+        if self.tools is not None:
+            create_args["tools"] = self.tools
+        if self.tool_choice is not None:
+            create_args["tool_choice"] = self.tool_choice
+
+        try:
+            response = self.generator.create(**create_args)
+        except (openai.AuthenticationError, openai.PermissionDeniedError) as e:
+            msg = (
+                f"OpenAI API authentication failed (HTTP {e.status_code}); "
+                f"verify {self.key_env_var} is valid."
+            )
+            logging.error(msg)
+            raise GarakException(msg) from None
+        except openai.BadRequestError as e:
+            logging.exception(e)
+            return [None]
+        except Exception as e:
+            msg = (
+                f"{self.__class__.__name__} generation failed. Is the model name "
+                "spelled correctly and does the shim accept input_audio?"
+            )
+            logging.critical(msg, exc_info=e)
+            raise GarakException(f"\U0001f6d1 {msg}") from e
+
+        if not getattr(response, "choices", None):
+            logging.debug("%s got no choices in response", self.__class__.__name__)
+            return [None]
+
+        message = response.choices[0].message
+        tool_calls = getattr(message, "tool_calls", None)
+        content = getattr(message, "content", None)
+        if tool_calls:
+            text = self._serialise_tool_calls(tool_calls, content)
+        else:
+            text = content if isinstance(content, str) else ""
+
+        return [Message(text=text)]
 
 
 DEFAULT_CLASS = "NVOpenAIChat"
