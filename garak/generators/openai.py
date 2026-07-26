@@ -127,8 +127,14 @@ context_lengths = {
     "o1-preview-2024-09-12": 32768,
 }
 
-audio_formats = ["wav", "mp3"]
-audio_pattern = re.compile("|".join(audio_formats))
+audio_mime_subtype_formats = {
+    "mp3": "mp3",
+    "mpeg": "mp3",
+    "wav": "wav",
+    "x-wav": "wav",
+}
+# the formats we can send are the mime-map's target values
+audio_formats = frozenset(audio_mime_subtype_formats.values())
 
 
 class OpenAICompatible(Generator):
@@ -139,6 +145,7 @@ class OpenAICompatible(Generator):
     active = True
     supports_multiple_generations = False
     generator_family_name = "OpenAICompatible"  # Placeholder override when extending
+    audio_formats = audio_formats
 
     # template defaults optionally override when extending
     DEFAULT_PARAMS = Generator.DEFAULT_PARAMS | {
@@ -215,7 +222,7 @@ class OpenAICompatible(Generator):
                             },
                         ],
                     }
-                elif match := audio_pattern.search(
+                elif audio_format := audio_mime_subtype_formats.get(
                     turn.content.data_type[0].split("/")[-1]
                 ):
                     transformed_turn = {
@@ -226,7 +233,7 @@ class OpenAICompatible(Generator):
                                 "type": "input_audio",
                                 "input_audio": {
                                     "data": f"{data_b64}",
-                                    "format": match.group(0),
+                                    "format": audio_format,
                                 },
                             },
                         ],
@@ -374,6 +381,20 @@ class OpenAICompatible(Generator):
             )
 
         return reponse_message_list
+
+
+class OpenAIAudioCompatible(OpenAICompatible):
+    """OpenAI-compatible chat target explicitly known to accept audio input.
+
+    Use this class only for endpoints whose advertised API capability includes
+    audio. The generic :class:`OpenAICompatible` target remains text-only at
+    the harness boundary so an arbitrary endpoint is not sent unsupported
+    binary content.
+    """
+
+    ENV_VAR = OpenAICompatible.ENV_VAR
+    generator_family_name = "OpenAIAudioCompatible"
+    modality = {"in": {"text", "audio"}, "out": {"text"}}
 
 
 class OpenAIGenerator(OpenAICompatible):
