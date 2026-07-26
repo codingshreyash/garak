@@ -26,6 +26,15 @@ VISUAL_PROBES = [
 ]
 AUDIO_PROBES = [
     "probes.audio.AudioAchillesHeel",
+    "probes.audio_instruction_priority.InstructionPriority",
+    "probes.audio_toolrisk.NativeToolRiskPETTS",
+    "probes.audio_reliability.SemanticReliability",
+    "probes.audio_reliability.TTSReliability",
+    "probes.audio_toolrisk.ToolRiskAcousticBestOfN",
+    "probes.audio_toolrisk.ToolRiskInstructionInjection",
+    "probes.audio_toolrisk.ToolRiskPETTS",
+    "probes.audio_toolrisk.ToolRiskPairedSemanticPETTS",
+    "probes.audio_toolrisk.ToolRiskSemanticPETTS",
 ]
 PROBES = [
     classname
