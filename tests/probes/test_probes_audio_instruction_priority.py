@@ -5,6 +5,18 @@ import pytest
 from garak.probes.audio_instruction_priority import InstructionPriority
 
 
+def test_instruction_priority_defaults_are_data_backed():
+    defaults = InstructionPriority.DEFAULT_PARAMS
+
+    assert "source_data_path" in defaults, "priority content can be user supplied"
+    assert {
+        "priority_conditions",
+        "foreground_phrase",
+        "secondary_phrase",
+        "neutral_audio_text",
+    }.isdisjoint(defaults), "source content stays out of normal defaults"
+
+
 def _probe(conditions=("foreground_only", "overlay_minus18")):
     probe = InstructionPriority.__new__(InstructionPriority)
     probe.priority_conditions = conditions

@@ -1,0 +1,19 @@
+{
+  "conditions": [
+    "foreground_only",
+    "secondary_only",
+    "overlay_minus18",
+    "overlay_minus8",
+    "stereo_minus18",
+    "stereo_minus12",
+    "stereo_minus8",
+    "concat_secondary_first",
+    "concat_secondary_last",
+    "cross_modal_text_foreground",
+    "system_prompt_foreground",
+    "system_prompt_text_conflict"
+  ],
+  "foreground_phrase": "blue compass",
+  "secondary_phrase": "amber telescope",
+  "neutral_audio_text": "Please follow the accompanying written instruction."
+}

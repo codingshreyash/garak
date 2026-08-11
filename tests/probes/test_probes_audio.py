@@ -10,6 +10,25 @@ import garak.probes.audio
 import garak.services.intentservice
 
 
+def test_petts_advertises_only_primary_synthesis_options():
+    advanced_options = {
+        "tts_model_revision",
+        "tts_voice",
+        "tts_sample_rate",
+        "tts_audio_format",
+        "tts_audio_subtype",
+        "tts_audio_stereo",
+    }
+
+    assert advanced_options.isdisjoint(
+        garak.probes.audio.PETTS.DEFAULT_PARAMS
+    ), "advanced synthesis tuning stays out of the default user-facing config"
+    assert (
+        len(garak.probes.audio.PETTS.DEFAULT_PARAMS)
+        <= len(garak.probes.IntentProbe.DEFAULT_PARAMS) + 2
+    ), "PETTS adds only the prompt and synthesis model to normal defaults"
+
+
 @pytest.fixture()
 def petts_probe(monkeypatch, tmp_path) -> garak.probes.audio.PETTS:
     _config.load_config()
@@ -54,6 +73,16 @@ def test_petts_ensure_audio_file_writes_to_cache(petts_probe, monkeypatch):
         cached_audio_path == audio_path
     ), "returns the same cache path for the same prompt and config"
     assert len(synthesis_calls) == 1, "reuses cached audio without re-synthesising"
+
+
+def test_petts_excludes_tts_model_from_serialised_state(petts_probe):
+    model = object()
+    petts_probe._tts_model = model
+
+    state = petts_probe.__getstate__()
+
+    assert state["_tts_model"] is None, "drops the unsafe TTS model from worker state"
+    assert petts_probe._tts_model is model, "does not mutate the parent probe cache"
 
 
 def test_petts_audio_format_is_configurable(petts_probe):

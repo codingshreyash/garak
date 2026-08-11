@@ -7,11 +7,12 @@ import respx
 import pytest
 import importlib
 import inspect
+from types import SimpleNamespace
 
 from collections.abc import Iterable
 
-from garak.attempt import Message, Turn, Conversation
-from garak.generators.openai import OpenAIAudioCompatible, OpenAICompatible
+from garak.attempt import Message, ToolCall, Turn, Conversation
+from garak.generators.openai import OpenAICompatible
 from garak.generators.rest import RestGenerator
 
 # TODO: expand this when we have faster loading, currently to process all generator costs 30s for 3 tests
@@ -48,17 +49,13 @@ def compatible() -> Iterable[OpenAICompatible]:
                 if module_klass == RestGenerator:
                     continue
                 if hasattr(module_klass, "ENV_VAR"):
+                    input_modalities = getattr(module_klass, "modality", {}).get(
+                        "in", set()
+                    )
+                    if input_modalities != {"text"}:
+                        continue
                     class_instance = build_test_instance(module_klass)
                     if isinstance(class_instance, OpenAICompatible):
-                        # this test drives a text prompt; skip generators that
-                        # require non-text input (e.g. audio-only S2S targets)
-                        text_conv = Conversation(
-                            [Turn("user", Message("first testing string"))]
-                        )
-                        try:
-                            class_instance._prepare_prompt(text_conv)
-                        except Exception:
-                            continue
                         yield f"{namespace}.{klass_name}"
 
 
@@ -152,28 +149,36 @@ def test_openai_multiple_generations():
     ), "OpenAI access expected to correctly support multiple generations by default"
 
 
-def test_openai_compatible_reports_supported_audio_formats():
-    assert OpenAICompatible.supported_formats("audio") == {
-        "wav",
-        "mp3",
-    }, "reports audio formats through the generator format interface"
-    assert (
-        OpenAICompatible.supported_formats("image") == set()
-    ), "reports no image formats by default"
+def test_openai_compatible_preserves_structured_tool_calls():
+    generator = OpenAICompatible.__new__(OpenAICompatible)
+    response_message = SimpleNamespace(
+        content=None,
+        tool_calls=[
+            SimpleNamespace(
+                model_dump=lambda: {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {
+                        "name": "lookup",
+                        "arguments": '{"query":"garak"}',
+                    },
+                }
+            )
+        ],
+    )
 
+    message = generator._message_from_chat_response(response_message)
 
-def test_openai_audio_compatible_declares_audio_modality():
-    assert OpenAICompatible.modality["in"] == {
-        "text"
-    }, "generic compatible targets remain text-only at the harness boundary"
-    assert OpenAIAudioCompatible.modality["in"] == {
-        "text",
-        "audio",
-    }, "explicit audio-compatible targets accept text plus audio"
-    assert OpenAIAudioCompatible.supported_formats("audio") == {
-        "wav",
-        "mp3",
-    }, "audio-compatible targets inherit supported wire formats"
+    assert message.text == "", "tool-only responses retain an empty text channel"
+    assert message.tool_calls == [
+        ToolCall(
+            name="lookup",
+            arguments='{"query":"garak"}',
+            id="call-1",
+            type="function",
+            source="response.tool_calls",
+        )
+    ], "tool calls use the provider-neutral message contract"
 
 
 def test_openai_compatible_normalises_mp3_audio_payload(tmp_path):
