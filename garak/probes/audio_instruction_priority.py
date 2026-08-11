@@ -4,7 +4,7 @@
 """**Audio instruction-priority probe**
 
 Competing-instruction (system vs spoken) priority probe built on `PETTS`.
-Trial content is data-backed and replaceable through ``source_data_path``.
+Trial content is loaded through garak's data package.
 """
 
 import json
@@ -40,10 +40,8 @@ class InstructionPriority(PETTS):
     foreground_phrase = None
     secondary_phrase = None
     neutral_audio_text = None
-    source_data_path = None
 
     DEFAULT_PARAMS = PETTS.DEFAULT_PARAMS | {
-        "source_data_path": None,
         "candidate_validation_manifest": None,
     }
 
@@ -60,7 +58,7 @@ class InstructionPriority(PETTS):
     def build_prompts(self):
         """Build calibration, overlap, sequence, and cross-modal conditions."""
 
-        source = load_instruction_priority_source(self.source_data_path)
+        source = load_instruction_priority_source()
         conditions = (
             source.conditions
             if self.priority_conditions is None

@@ -8,7 +8,9 @@ from garak.probes.audio_instruction_priority import InstructionPriority
 def test_instruction_priority_defaults_are_data_backed():
     defaults = InstructionPriority.DEFAULT_PARAMS
 
-    assert "source_data_path" in defaults, "priority content can be user supplied"
+    assert (
+        "source_data_path" not in defaults
+    ), "garak data-path precedence supplies content overrides"
     assert {
         "priority_conditions",
         "foreground_phrase",

@@ -2,6 +2,8 @@ import json
 
 import pytest
 
+import garak.resources.audio.source as audio_source
+from garak.data import LocalDataPath
 from garak.resources.audio.reliability import tts_reliability_cases
 from garak.resources.audio.source import (
     load_instruction_priority_source,
@@ -21,52 +23,66 @@ def test_packaged_audio_sources_load_as_valid_records():
     assert tts_reliability_cases(), "reliability source includes transcription cases"
 
 
-def test_tool_risk_source_accepts_user_provided_content(tmp_path):
-    source_path = tmp_path / "tool_risk.json"
-    source_path.write_text(
-        json.dumps(
-            {
-                "cases": [
-                    {
-                        "case_id": "custom.safe_example",
-                        "intent": "S008mal",
-                        "source_text": "Use a test tool for a custom source request.",
-                        "action_signature": "custom source request",
-                    }
-                ],
-                "semantic_strategies": {"direct": "{source_text}"},
-            }
-        ),
+def _use_audio_data_override(monkeypatch, tmp_path, filename, content):
+    user_data_path = tmp_path / "user_data"
+    audio_data_path = user_data_path / "audio"
+    audio_data_path.mkdir(parents=True)
+    (audio_data_path / filename).write_text(
+        json.dumps(content),
         encoding="utf-8",
     )
+    monkeypatch.setattr(
+        LocalDataPath,
+        "ORDERED_SEARCH_PATHS",
+        [user_data_path, LocalDataPath.ORDERED_SEARCH_PATHS[-1]],
+    )
+    monkeypatch.setattr(audio_source, "data_path", LocalDataPath(user_data_path))
 
-    source = load_tool_risk_source(source_path)
+
+def test_tool_risk_source_accepts_user_data_override(monkeypatch, tmp_path):
+    _use_audio_data_override(
+        monkeypatch,
+        tmp_path,
+        "tool_risk.json",
+        {
+            "cases": [
+                {
+                    "case_id": "custom.safe_example",
+                    "intent": "S008mal",
+                    "source_text": "Use a test tool for a custom source request.",
+                    "action_signature": "custom source request",
+                }
+            ],
+            "semantic_strategies": {"direct": "{source_text}"},
+        },
+    )
+
+    source = load_tool_risk_source()
 
     assert (
         source.cases[0].case_id == "custom.safe_example"
-    ), "custom source data replaces packaged tool-risk cases"
+    ), "user data overrides packaged tool-risk cases"
     assert (
         source.semantic_strategies["direct"] == "{source_text}"
-    ), "custom source data controls semantic framing"
+    ), "user data overrides packaged semantic framing"
 
 
-def test_tool_risk_source_rejects_incomplete_records(tmp_path):
-    source_path = tmp_path / "tool_risk.json"
-    source_path.write_text(
-        json.dumps(
-            {
-                "cases": [
-                    {
-                        "case_id": "custom.incomplete",
-                        "intent": "S008mal",
-                        "source_text": "Missing its action signature.",
-                    }
-                ],
-                "semantic_strategies": {"direct": "{source_text}"},
-            }
-        ),
-        encoding="utf-8",
+def test_tool_risk_source_rejects_incomplete_user_override(monkeypatch, tmp_path):
+    _use_audio_data_override(
+        monkeypatch,
+        tmp_path,
+        "tool_risk.json",
+        {
+            "cases": [
+                {
+                    "case_id": "custom.incomplete",
+                    "intent": "S008mal",
+                    "source_text": "Missing its action signature.",
+                }
+            ],
+            "semantic_strategies": {"direct": "{source_text}"},
+        },
     )
 
     with pytest.raises(ValueError, match="action_signature"):
-        load_tool_risk_source(source_path)
+        load_tool_risk_source()

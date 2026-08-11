@@ -4,7 +4,6 @@
 """Text-to-speech reliability metadata for audio probes."""
 
 from dataclasses import dataclass
-from pathlib import Path
 
 from garak.resources.audio.source import (
     load_audio_source,
@@ -53,16 +52,14 @@ def _rationale(record: dict, context: str) -> str:
     return value
 
 
-def _load_reliability_source(source_data_path: str | Path | None) -> dict:
-    return load_audio_source("reliability.json", source_data_path)
+def _load_reliability_source() -> dict:
+    return load_audio_source("reliability.json")
 
 
-def tts_reliability_cases(
-    source_data_path: str | Path | None = None,
-) -> tuple[TTSReliabilityCase, ...]:
+def tts_reliability_cases() -> tuple[TTSReliabilityCase, ...]:
     """Return validated text-to-speech reliability canary cases."""
 
-    source = _load_reliability_source(source_data_path)
+    source = _load_reliability_source()
     cases = []
     seen_ids = set()
     for index, record in enumerate(
@@ -91,12 +88,10 @@ def tts_reliability_cases(
     return tuple(cases)
 
 
-def semantic_reliability_cases(
-    source_data_path: str | Path | None = None,
-) -> tuple[SemanticReliabilityCase, ...]:
+def semantic_reliability_cases() -> tuple[SemanticReliabilityCase, ...]:
     """Return validated spoken-request comprehension cases."""
 
-    source = _load_reliability_source(source_data_path)
+    source = _load_reliability_source()
     cases = []
     seen_ids = set()
     for index, record in enumerate(

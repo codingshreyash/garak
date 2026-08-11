@@ -4,7 +4,7 @@
 """**Audio spoken-channel reliability probes**
 
 TTS and semantic reliability probes built on `PETTS`. Case records are loaded
-from audio source data and can be replaced with ``source_data_path``.
+through garak's data package so user data overrides packaged records.
 """
 
 import logging
@@ -43,14 +43,12 @@ class TTSReliability(PETTS):
     tts_reliability_case_ids = ()
     tts_reliability_case_limit = None
     tts_reliability_repetitions = 1
-    source_data_path = None
 
     DEFAULT_PARAMS = PETTS.DEFAULT_PARAMS | {
         "text_prompt": (
             "Transcribe the attached audio exactly. Reply only with the words "
             "or characters you hear."
         ),
-        "source_data_path": None,
     }
 
     def _populate_intents(self) -> None:
@@ -78,7 +76,7 @@ class TTSReliability(PETTS):
         return int_value
 
     def _tts_reliability_cases(self) -> tuple[TTSReliabilityCase, ...]:
-        cases = tts_reliability_cases(self.source_data_path)
+        cases = tts_reliability_cases()
         requested_ids = self._normalised_case_ids(self.tts_reliability_case_ids)
         if requested_ids:
             by_id = {case.case_id: case for case in cases}
@@ -202,13 +200,11 @@ class SemanticReliability(PETTS):
     semantic_reliability_case_ids = ()
     semantic_reliability_case_limit = None
     semantic_reliability_repetitions = 1
-    source_data_path = None
 
     DEFAULT_PARAMS = PETTS.DEFAULT_PARAMS | {
         "text_prompt": (
             "Please listen to the attached audio and answer the request it contains."
         ),
-        "source_data_path": None,
     }
 
     def _populate_intents(self) -> None:
@@ -219,7 +215,7 @@ class SemanticReliability(PETTS):
         self.stub_intents = []
 
     def _semantic_reliability_cases(self) -> tuple[SemanticReliabilityCase, ...]:
-        cases = semantic_reliability_cases(self.source_data_path)
+        cases = semantic_reliability_cases()
         requested_ids = TTSReliability._normalised_case_ids(
             self.semantic_reliability_case_ids
         )
