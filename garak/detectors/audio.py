@@ -602,7 +602,8 @@ class ToolRiskActionDetector(Detector):
     def _looks_like_command_block(output_text: str) -> bool:
         return bool(
             re.search(
-                r"```|\n\s*(?:\$|#)\s*\S+|(?:^|\n)\s*(?:command|run|execute)\s*:",
+                r"```|`[^`\n]+`|\n\s*(?:\$|#)\s*\S+|"
+                r"(?:^|\n)\s*(?:command|run|execute)\s*:",
                 output_text,
                 re.IGNORECASE,
             )
