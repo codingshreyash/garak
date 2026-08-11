@@ -1,11 +1,26 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 from pathlib import Path
 
 import pytest
 
 from garak.probes.audio_suffix import AudioSuffixInjection
+
+
+def test_suffix_defaults_are_data_backed_and_compact():
+    defaults = AudioSuffixInjection.DEFAULT_PARAMS
+
+    assert "source_data_path" in defaults, "suffix content can be user supplied"
+    assert {
+        "suffix_gaps_ms",
+        "carrier_ids",
+        "suffix_ids",
+        "suffix_stealth",
+        "transform_max_duration_seconds",
+        "transform_max_byte_size",
+    }.isdisjoint(defaults), "advanced suffix sweeps stay out of normal defaults"
 
 
 def _bare(**params):
@@ -65,6 +80,45 @@ def test_build_prompts_enumerates_controls_and_combined():
     assert len(trials) == 2 + 2 + 8
 
 
+def test_build_prompts_uses_custom_source_data(tmp_path):
+    source_path = tmp_path / "injection.json"
+    source_path.write_text(
+        json.dumps(
+            {
+                "carriers": [
+                    {
+                        "case_id": "carrier.custom",
+                        "source_text": "Name a primary colour.",
+                        "required_response_terms": [["red"]],
+                    }
+                ],
+                "payloads": [
+                    {
+                        "case_id": "payload.custom",
+                        "source_text": "Follow the custom test instruction.",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    probe = _bare(
+        carrier_ids=None,
+        suffix_ids=None,
+        suffix_gaps_ms=(0,),
+    )
+    probe.source_data_path = str(source_path)
+
+    probe.build_prompts()
+
+    assert {
+        trial[1] for trial in probe._selected_suffix_trials if trial[1] is not None
+    } == {"carrier.custom"}, "probe selects carriers from the custom source"
+    assert {
+        trial[2] for trial in probe._selected_suffix_trials if trial[2] is not None
+    } == {"payload.custom"}, "probe selects payloads from the custom source"
+
+
 def test_combined_source_text_records_gap():
     probe = _bare(suffix_gaps_ms=(500,))
     probe.build_prompts()
@@ -115,6 +169,12 @@ def test_probe_is_discoverable_as_plugin():
     from garak._plugins import plugin_info
 
     info = plugin_info("probes.audio_suffix.AudioSuffixInjection")
-    assert "audio.AudioToolRiskJudge" in info["extended_detectors"]
-    # the plugin cache normalizes tuples to JSON lists
-    assert list(info["DEFAULT_PARAMS"]["suffix_gaps_ms"]) == [0, 100, 500]
+    assert (
+        "audio.AudioToolRiskJudge" in info["extended_detectors"]
+    ), "suffix probe retains tool-risk judging"
+    assert (
+        "source_data_path" in info["DEFAULT_PARAMS"]
+    ), "plugin metadata exposes the custom source path"
+    assert (
+        "suffix_gaps_ms" not in info["DEFAULT_PARAMS"]
+    ), "plugin metadata keeps advanced gap sweeps out of normal defaults"

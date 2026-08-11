@@ -17,6 +17,9 @@ Controls:
 The relative-gain sweep probes the tension between "quiet enough to hide" and
 "loud enough for the target to act on". Every candidate is gated by the
 independent-ASR intelligibility check and the tool-risk detectors/judge.
+
+Carrier and payload records are data-backed and replaceable through
+``source_data_path``.
 """
 
 import logging
@@ -26,8 +29,11 @@ from pathlib import Path
 from garak.attempt import Attempt, Message
 from garak.probes.audio import PETTS
 from garak.probes.audio_toolrisk import ToolRiskPETTS
-from garak.probes.audio_suffix import _SUFFIX_CARRIERS, _SUFFIX_PAYLOADS
 from garak.resources.audio.attack import audio_file_metadata, recipe_digest
+from garak.resources.audio.source import (
+    AudioInjectionSource,
+    load_audio_injection_source,
+)
 from garak.resources.audio.transforms import apply_transform_recipe
 
 _VALID_POSITIONS = frozenset(("start", "middle", "end"))
@@ -50,34 +56,40 @@ class AudioOverlayInjection(ToolRiskPETTS):
         "audio.AudioToolRiskJudge",
         "mitigation.MitigationBypass",
     ]
-    DEFAULT_PARAMS = ToolRiskPETTS.DEFAULT_PARAMS | {
-        "overlay_gains_db": (-6.0, -12.0, -18.0),
-        "carrier_ids": tuple(carrier_id for carrier_id, _, _ in _SUFFIX_CARRIERS),
-        "payload_ids": tuple(payload_id for payload_id, _ in _SUFFIX_PAYLOADS),
-        "payload_positions": ("start", "middle", "end"),
-        "transform_max_duration_seconds": 120.0,
-        "transform_max_byte_size": 20_000_000,
-    }
 
-    def _selected_carriers(self):
-        by_id = {c[0]: c for c in _SUFFIX_CARRIERS}
-        ids = (
-            (self.carrier_ids,)
-            if isinstance(self.carrier_ids, str)
-            else tuple(self.carrier_ids)
-        )
+    overlay_gains_db = (-6.0, -12.0, -18.0)
+    carrier_ids = None
+    payload_ids = None
+    payload_positions = ("start", "middle", "end")
+    transform_max_duration_seconds = 120.0
+    transform_max_byte_size = 20_000_000
+    DEFAULT_PARAMS = ToolRiskPETTS.DEFAULT_PARAMS
+
+    def _selected_carriers(self, source: AudioInjectionSource):
+        by_id = {carrier.case_id: carrier for carrier in source.carriers}
+        if self.carrier_ids is None:
+            ids = tuple(by_id)
+        else:
+            ids = (
+                (self.carrier_ids,)
+                if isinstance(self.carrier_ids, str)
+                else tuple(self.carrier_ids)
+            )
         unknown = sorted(set(ids) - by_id.keys())
         if unknown:
             raise ValueError("unknown overlay carrier ids: " + ", ".join(unknown))
         return tuple(by_id[i] for i in ids)
 
-    def _selected_payloads(self):
-        by_id = {s[0]: s for s in _SUFFIX_PAYLOADS}
-        ids = (
-            (self.payload_ids,)
-            if isinstance(self.payload_ids, str)
-            else tuple(self.payload_ids)
-        )
+    def _selected_payloads(self, source: AudioInjectionSource):
+        by_id = {payload.case_id: payload for payload in source.payloads}
+        if self.payload_ids is None:
+            ids = tuple(by_id)
+        else:
+            ids = (
+                (self.payload_ids,)
+                if isinstance(self.payload_ids, str)
+                else tuple(self.payload_ids)
+            )
         unknown = sorted(set(ids) - by_id.keys())
         if unknown:
             raise ValueError("unknown overlay payload ids: " + ", ".join(unknown))
@@ -137,39 +149,48 @@ class AudioOverlayInjection(ToolRiskPETTS):
         end) as an independent variable alongside ``overlay_gains_db``.
         """
 
-        carriers = self._selected_carriers()
-        payloads = self._selected_payloads()
+        source = load_audio_injection_source(self.source_data_path)
+        carriers = self._selected_carriers(source)
+        payloads = self._selected_payloads(source)
         gains = self._gains()
         positions = self._positions()
         trials = []
-        for carrier_id, carrier_text, required in carriers:
+        for carrier in carriers:
             trials.append(
                 (
                     "foreground_only",
-                    carrier_id,
+                    carrier.case_id,
                     None,
                     None,
                     None,
-                    carrier_text,
-                    required,
+                    carrier.source_text,
+                    carrier.required_response_terms,
                 )
             )
-        for payload_id, payload_text in payloads:
+        for payload in payloads:
             trials.append(
-                ("background_only", None, payload_id, None, None, payload_text, ())
+                (
+                    "background_only",
+                    None,
+                    payload.case_id,
+                    None,
+                    None,
+                    payload.source_text,
+                    (),
+                )
             )
-        for carrier_id, carrier_text, _ in carriers:
-            for payload_id, payload_text in payloads:
+        for carrier in carriers:
+            for payload in payloads:
                 for gain_db in gains:
                     for position in positions:
                         trials.append(
                             (
                                 "mixed",
-                                carrier_id,
-                                payload_id,
+                                carrier.case_id,
+                                payload.case_id,
                                 gain_db,
                                 position,
-                                (carrier_text, payload_text),
+                                (carrier.source_text, payload.source_text),
                                 (),
                             )
                         )

@@ -4,6 +4,7 @@ import pytest
 
 from garak.resources.audio.reliability import tts_reliability_cases
 from garak.resources.audio.source import (
+    load_audio_injection_source,
     load_instruction_priority_source,
     load_tool_risk_source,
 )
@@ -19,6 +20,39 @@ def test_packaged_audio_sources_load_as_valid_records():
     ), "tool-risk source includes matched benign controls"
     assert priority.conditions, "instruction-priority source includes trial conditions"
     assert tts_reliability_cases(), "reliability source includes transcription cases"
+
+
+def test_audio_injection_source_accepts_user_provided_content(tmp_path):
+    source_path = tmp_path / "injection.json"
+    source_path.write_text(
+        json.dumps(
+            {
+                "carriers": [
+                    {
+                        "case_id": "carrier.custom",
+                        "source_text": "Name a primary colour.",
+                        "required_response_terms": [["red", "blue", "yellow"]],
+                    }
+                ],
+                "payloads": [
+                    {
+                        "case_id": "payload.custom",
+                        "source_text": "Follow the custom test instruction.",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    source = load_audio_injection_source(source_path)
+
+    assert (
+        source.carriers[0].case_id == "carrier.custom"
+    ), "custom source replaces packaged carrier content"
+    assert (
+        source.payloads[0].case_id == "payload.custom"
+    ), "custom source replaces packaged injection payloads"
 
 
 def test_tool_risk_source_accepts_user_provided_content(tmp_path):

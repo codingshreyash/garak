@@ -9,6 +9,20 @@ import pytest
 from garak.probes.audio_overlay import AudioOverlayInjection
 
 
+def test_overlay_defaults_are_data_backed_and_compact():
+    defaults = AudioOverlayInjection.DEFAULT_PARAMS
+
+    assert "source_data_path" in defaults, "overlay content can be user supplied"
+    assert {
+        "overlay_gains_db",
+        "carrier_ids",
+        "payload_ids",
+        "payload_positions",
+        "transform_max_duration_seconds",
+        "transform_max_byte_size",
+    }.isdisjoint(defaults), "advanced overlay sweeps stay out of normal defaults"
+
+
 def _bare(**params):
     p = AudioOverlayInjection.__new__(AudioOverlayInjection)
     p.carrier_ids = params.get("carrier_ids", ("carrier.capital", "carrier.grass"))
@@ -105,5 +119,12 @@ def test_probe_is_discoverable_as_plugin():
     from garak._plugins import plugin_info
 
     info = plugin_info("probes.audio_overlay.AudioOverlayInjection")
-    assert "audio.AudioToolRiskJudge" in info["extended_detectors"]
-    assert list(info["DEFAULT_PARAMS"]["overlay_gains_db"]) == [-6.0, -12.0, -18.0]
+    assert (
+        "audio.AudioToolRiskJudge" in info["extended_detectors"]
+    ), "overlay probe retains tool-risk judging"
+    assert (
+        "source_data_path" in info["DEFAULT_PARAMS"]
+    ), "plugin metadata exposes the custom source path"
+    assert (
+        "overlay_gains_db" not in info["DEFAULT_PARAMS"]
+    ), "plugin metadata keeps advanced gain sweeps out of normal defaults"
