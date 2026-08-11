@@ -21,7 +21,7 @@ import openai
 import backoff
 
 from garak import _config
-from garak.attempt import Message, Conversation
+from garak.attempt import Message, Conversation, ToolCall
 import garak.exception
 from garak.generators.base import Generator
 
@@ -251,6 +251,44 @@ class OpenAICompatible(Generator):
 
         return turn_list
 
+    @staticmethod
+    def _normalise_tool_call(call: object, source: str) -> ToolCall | None:
+        model_dump = getattr(call, "model_dump", None)
+        if callable(model_dump):
+            call = model_dump()
+        if not isinstance(call, dict):
+            return None
+        call = dict(call)
+        call.setdefault("source", source)
+        return ToolCall.from_value(call)
+
+    def _normalise_tool_calls(
+        self, tool_calls: object, content: object = None
+    ) -> list[ToolCall]:
+        """Return provider-neutral tool calls from an OpenAI-style response."""
+
+        del content
+        if not isinstance(tool_calls, (list, tuple)):
+            return []
+        normalised = []
+        for call in tool_calls:
+            tool_call = self._normalise_tool_call(call, "response.tool_calls")
+            if tool_call is not None:
+                normalised.append(tool_call)
+        return normalised
+
+    def _message_from_chat_response(self, response_message: object) -> Message:
+        """Build a message without flattening structured response content."""
+
+        content = getattr(response_message, "content", None)
+        message = Message(text=content if isinstance(content, str) else "")
+        tool_calls = self._normalise_tool_calls(
+            getattr(response_message, "tool_calls", None), content
+        )
+        if tool_calls:
+            message.tool_calls = tool_calls
+        return message
+
     # noinspection PyArgumentList
     @backoff.on_exception(
         backoff.fibo,
@@ -371,7 +409,7 @@ class OpenAICompatible(Generator):
             reponse_message_list = [Message(c.text) for c in response.choices]
         else:
             reponse_message_list = [
-                Message(c.message.content) for c in response.choices
+                self._message_from_chat_response(c.message) for c in response.choices
             ]
 
         if len(reponse_message_list) != generations_this_call:

@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import io
 import math
 import wave
 
@@ -8,6 +9,7 @@ import numpy
 import pytest
 
 from garak.resources.audio.transforms import (
+    append_wav_silence,
     apply_transform_recipe,
     read_pcm16_wav,
 )
@@ -27,6 +29,25 @@ def _write_tone(path, *, sample_rate=8000, duration=0.2):
         wav_file.setsampwidth(2)
         wav_file.setframerate(sample_rate)
         wav_file.writeframes(pcm.tobytes())
+
+
+def test_append_wav_silence_preserves_format_and_extends_frames(tmp_path):
+    source = tmp_path / "source.wav"
+    _write_tone(source, sample_rate=8000, duration=0.2)
+
+    transformed = append_wav_silence(source.read_bytes(), 250)
+
+    with wave.open(io.BytesIO(transformed), "rb") as wav_file:
+        assert wav_file.getframerate() == 8000, "preserves the source sample rate"
+        assert wav_file.getnchannels() == 1, "preserves the source channel count"
+        assert (
+            wav_file.getnframes() == 3600
+        ), "appends the requested number of silent frames"
+
+
+def test_append_wav_silence_rejects_invalid_input():
+    with pytest.raises(ValueError, match="valid WAV"):
+        append_wav_silence(b"not a wav", 100)
 
 
 def test_transform_recipe_is_ordered_and_records_provenance(tmp_path):

@@ -4,6 +4,7 @@
 """Composable, dependency-light WAV transformations for audio probes."""
 
 from dataclasses import dataclass
+import io
 from pathlib import Path
 import tempfile
 import wave
@@ -56,6 +57,34 @@ def write_pcm16_wav(path: str | Path, waveform: Waveform) -> None:
         wav_file.setsampwidth(2)
         wav_file.setframerate(waveform.sample_rate)
         wav_file.writeframes(pcm.tobytes())
+
+
+def append_wav_silence(wav_bytes: bytes, silence_ms: int) -> bytes:
+    """Return WAV bytes with the requested trailing silence appended."""
+
+    if not isinstance(wav_bytes, bytes):
+        raise TypeError("audio silence transform requires bytes")
+    if not isinstance(silence_ms, int) or isinstance(silence_ms, bool):
+        raise TypeError("silence duration must be an integer number of milliseconds")
+    if silence_ms < 0:
+        raise ValueError("silence duration must be non-negative")
+    if silence_ms == 0:
+        return wav_bytes
+
+    try:
+        with wave.open(io.BytesIO(wav_bytes), "rb") as wav_file:
+            params = wav_file.getparams()
+            original_frames = wav_file.readframes(wav_file.getnframes())
+
+        silence_frames = round(params.framerate * silence_ms / 1000)
+        silence_bytes = b"\x00" * silence_frames * params.nchannels * params.sampwidth
+        output = io.BytesIO()
+        with wave.open(output, "wb") as wav_file:
+            wav_file.setparams(params)
+            wav_file.writeframes(original_frames + silence_bytes)
+    except (EOFError, wave.Error) as exc:
+        raise ValueError("audio silence transform requires valid WAV input") from exc
+    return output.getvalue()
 
 
 def _gain(samples, decibels: float):
