@@ -18,8 +18,7 @@ The relative-gain sweep probes the tension between "quiet enough to hide" and
 "loud enough for the target to act on". Every candidate is gated by the
 independent-ASR intelligibility check and the tool-risk detectors/judge.
 
-Carrier and payload records are data-backed and replaceable through
-``source_data_path``.
+Carrier and payload records are loaded through garak's data package.
 """
 
 import logging
@@ -149,7 +148,7 @@ class AudioOverlayInjection(ToolRiskPETTS):
         end) as an independent variable alongside ``overlay_gains_db``.
         """
 
-        source = load_audio_injection_source(self.source_data_path)
+        source = load_audio_injection_source()
         carriers = self._selected_carriers(source)
         payloads = self._selected_payloads(source)
         gains = self._gains()

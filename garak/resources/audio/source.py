@@ -2,26 +2,22 @@
 
 from dataclasses import dataclass
 import json
-from pathlib import Path
 
 from garak.data import path as data_path
+from garak.exception import GarakException
 
 
-def load_audio_source(
-    default_filename: str, source_data_path: str | Path | None = None
-) -> dict:
-    """Load an audio source-data object from an override or packaged data."""
+def load_audio_source(default_filename: str) -> dict:
+    """Load an audio source-data object using garak data-path precedence."""
 
-    source_path = (
-        Path(source_data_path).expanduser()
-        if source_data_path is not None
-        else data_path / "audio" / default_filename
-    )
     try:
+        source_path = data_path / "audio" / default_filename
         with source_path.open("r", encoding="utf-8") as source_file:
             source = json.load(source_file)
-    except FileNotFoundError as exc:
-        raise ValueError(f"audio source data not found: {source_path}") from exc
+    except (FileNotFoundError, GarakException) as exc:
+        raise ValueError(
+            f"audio source data not found: audio/{default_filename}"
+        ) from exc
     except json.JSONDecodeError as exc:
         raise ValueError(f"invalid JSON in audio source data: {source_path}") from exc
     except OSError as exc:
@@ -98,12 +94,10 @@ class ToolRiskSource:
     semantic_strategies: dict[str, str]
 
 
-def load_tool_risk_source(
-    source_data_path: str | Path | None = None,
-) -> ToolRiskSource:
-    """Load tool-risk cases from packaged or user-provided source data."""
+def load_tool_risk_source() -> ToolRiskSource:
+    """Load tool-risk cases through garak data-path precedence."""
 
-    source = load_audio_source("tool_risk.json", source_data_path)
+    source = load_audio_source("tool_risk.json")
     cases = []
     seen_ids = set()
     for index, record in enumerate(
@@ -183,12 +177,10 @@ class InstructionPrioritySource:
     neutral_audio_text: str
 
 
-def load_instruction_priority_source(
-    source_data_path: str | Path | None = None,
-) -> InstructionPrioritySource:
-    """Load instruction-priority content from packaged or custom data."""
+def load_instruction_priority_source() -> InstructionPrioritySource:
+    """Load instruction-priority content through garak data-path precedence."""
 
-    source = load_audio_source("instruction_priority.json", source_data_path)
+    source = load_audio_source("instruction_priority.json")
     conditions = source.get("conditions")
     if (
         not isinstance(conditions, list)
@@ -237,12 +229,10 @@ class AudioInjectionSource:
     payloads: tuple[AudioInjectionPayload, ...]
 
 
-def load_audio_injection_source(
-    source_data_path: str | Path | None = None,
-) -> AudioInjectionSource:
-    """Load injection content from packaged or user-provided source data."""
+def load_audio_injection_source() -> AudioInjectionSource:
+    """Load injection content through garak data-path precedence."""
 
-    source = load_audio_source("injection.json", source_data_path)
+    source = load_audio_source("injection.json")
     carriers = []
     seen_ids = set()
     for index, record in enumerate(

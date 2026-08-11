@@ -6,13 +6,17 @@ from pathlib import Path
 
 import pytest
 
+import garak.resources.audio.source as audio_source
+from garak.data import LocalDataPath
 from garak.probes.audio_suffix import AudioSuffixInjection
 
 
 def test_suffix_defaults_are_data_backed_and_compact():
     defaults = AudioSuffixInjection.DEFAULT_PARAMS
 
-    assert "source_data_path" in defaults, "suffix content can be user supplied"
+    assert (
+        "source_data_path" not in defaults
+    ), "garak data-path precedence supplies content overrides"
     assert {
         "suffix_gaps_ms",
         "carrier_ids",
@@ -80,9 +84,11 @@ def test_build_prompts_enumerates_controls_and_combined():
     assert len(trials) == 2 + 2 + 8
 
 
-def test_build_prompts_uses_custom_source_data(tmp_path):
-    source_path = tmp_path / "injection.json"
-    source_path.write_text(
+def test_build_prompts_uses_user_data_override(monkeypatch, tmp_path):
+    user_data_path = tmp_path / "user_data"
+    audio_data_path = user_data_path / "audio"
+    audio_data_path.mkdir(parents=True)
+    (audio_data_path / "injection.json").write_text(
         json.dumps(
             {
                 "carriers": [
@@ -102,21 +108,26 @@ def test_build_prompts_uses_custom_source_data(tmp_path):
         ),
         encoding="utf-8",
     )
+    monkeypatch.setattr(
+        LocalDataPath,
+        "ORDERED_SEARCH_PATHS",
+        [user_data_path, LocalDataPath.ORDERED_SEARCH_PATHS[-1]],
+    )
+    monkeypatch.setattr(audio_source, "data_path", LocalDataPath(user_data_path))
     probe = _bare(
         carrier_ids=None,
         suffix_ids=None,
         suffix_gaps_ms=(0,),
     )
-    probe.source_data_path = str(source_path)
 
     probe.build_prompts()
 
     assert {
         trial[1] for trial in probe._selected_suffix_trials if trial[1] is not None
-    } == {"carrier.custom"}, "probe selects carriers from the custom source"
+    } == {"carrier.custom"}, "probe selects carriers from the user data override"
     assert {
         trial[2] for trial in probe._selected_suffix_trials if trial[2] is not None
-    } == {"payload.custom"}, "probe selects payloads from the custom source"
+    } == {"payload.custom"}, "probe selects payloads from the user data override"
 
 
 def test_combined_source_text_records_gap():
@@ -173,8 +184,8 @@ def test_probe_is_discoverable_as_plugin():
         "audio.AudioToolRiskJudge" in info["extended_detectors"]
     ), "suffix probe retains tool-risk judging"
     assert (
-        "source_data_path" in info["DEFAULT_PARAMS"]
-    ), "plugin metadata exposes the custom source path"
+        "source_data_path" not in info["DEFAULT_PARAMS"]
+    ), "plugin metadata relies on garak data-path precedence"
     assert (
         "suffix_gaps_ms" not in info["DEFAULT_PARAMS"]
     ), "plugin metadata keeps advanced gap sweeps out of normal defaults"

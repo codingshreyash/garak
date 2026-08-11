@@ -12,7 +12,9 @@ from garak.probes.audio_overlay import AudioOverlayInjection
 def test_overlay_defaults_are_data_backed_and_compact():
     defaults = AudioOverlayInjection.DEFAULT_PARAMS
 
-    assert "source_data_path" in defaults, "overlay content can be user supplied"
+    assert (
+        "source_data_path" not in defaults
+    ), "garak data-path precedence supplies content overrides"
     assert {
         "overlay_gains_db",
         "carrier_ids",
@@ -123,8 +125,8 @@ def test_probe_is_discoverable_as_plugin():
         "audio.AudioToolRiskJudge" in info["extended_detectors"]
     ), "overlay probe retains tool-risk judging"
     assert (
-        "source_data_path" in info["DEFAULT_PARAMS"]
-    ), "plugin metadata exposes the custom source path"
+        "source_data_path" not in info["DEFAULT_PARAMS"]
+    ), "plugin metadata relies on garak data-path precedence"
     assert (
         "overlay_gains_db" not in info["DEFAULT_PARAMS"]
     ), "plugin metadata keeps advanced gain sweeps out of normal defaults"

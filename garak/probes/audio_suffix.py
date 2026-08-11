@@ -20,8 +20,7 @@ Every candidate is gated by the independent-ASR intelligibility check and the
 tool-risk detectors/judge, so a non-effect is distinguished from the target
 never hearing the suffix.
 
-Carrier and payload records are data-backed and replaceable through
-``source_data_path``.
+Carrier and payload records are loaded through garak's data package.
 """
 
 import logging
@@ -163,7 +162,7 @@ class AudioSuffixInjection(ToolRiskPETTS):
     def build_prompts(self):
         """Enumerate benign_only, suffix_only, and combined suffix trials."""
 
-        source = load_audio_injection_source(self.source_data_path)
+        source = load_audio_injection_source()
         carriers = self._selected_carriers(source)
         suffixes = self._selected_suffixes(source)
         gaps = self._gaps()
