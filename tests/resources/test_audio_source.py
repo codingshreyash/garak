@@ -6,6 +6,7 @@ import garak.resources.audio.source as audio_source
 from garak.data import LocalDataPath
 from garak.resources.audio.reliability import tts_reliability_cases
 from garak.resources.audio.source import (
+    load_audio_injection_source,
     load_instruction_priority_source,
     load_tool_risk_source,
 )
@@ -14,12 +15,15 @@ from garak.resources.audio.source import (
 def test_packaged_audio_sources_load_as_valid_records():
     tool_risk = load_tool_risk_source()
     priority = load_instruction_priority_source()
+    injection = load_audio_injection_source()
 
     assert len(tool_risk.cases) >= 25, "packaged tool-risk coverage is retained"
     assert any(
         case.benign_control is not None for case in tool_risk.cases
     ), "tool-risk source includes matched benign controls"
     assert priority.conditions, "instruction-priority source includes trial conditions"
+    assert injection.carriers, "injection source includes carrier records"
+    assert injection.payloads, "injection source includes payload records"
     assert tts_reliability_cases(), "reliability source includes transcription cases"
 
 
@@ -37,6 +41,38 @@ def _use_audio_data_override(monkeypatch, tmp_path, filename, content):
         [user_data_path, LocalDataPath.ORDERED_SEARCH_PATHS[-1]],
     )
     monkeypatch.setattr(audio_source, "data_path", LocalDataPath(user_data_path))
+
+
+def test_audio_injection_source_accepts_user_data_override(monkeypatch, tmp_path):
+    _use_audio_data_override(
+        monkeypatch,
+        tmp_path,
+        "injection.json",
+        {
+            "carriers": [
+                {
+                    "case_id": "carrier.custom",
+                    "source_text": "Name a primary colour.",
+                    "required_response_terms": [["red", "blue", "yellow"]],
+                }
+            ],
+            "payloads": [
+                {
+                    "case_id": "payload.custom",
+                    "source_text": "Follow the custom test instruction.",
+                }
+            ],
+        },
+    )
+
+    source = load_audio_injection_source()
+
+    assert (
+        source.carriers[0].case_id == "carrier.custom"
+    ), "user data overrides packaged carrier content"
+    assert (
+        source.payloads[0].case_id == "payload.custom"
+    ), "user data overrides packaged injection payloads"
 
 
 def test_tool_risk_source_accepts_user_data_override(monkeypatch, tmp_path):

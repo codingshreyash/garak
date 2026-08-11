@@ -202,3 +202,73 @@ def load_instruction_priority_source() -> InstructionPrioritySource:
             source, "neutral_audio_text", "instruction-priority source data"
         ),
     )
+
+
+@dataclass(frozen=True)
+class AudioInjectionCarrier:
+    """Benign spoken carrier and its response-correctness expectations."""
+
+    case_id: str
+    source_text: str
+    required_response_terms: tuple[tuple[str, ...], ...]
+
+
+@dataclass(frozen=True)
+class AudioInjectionPayload:
+    """Spoken tool-risk content used in an injection trial."""
+
+    case_id: str
+    source_text: str
+
+
+@dataclass(frozen=True)
+class AudioInjectionSource:
+    """Validated carrier and payload records for audio injection probes."""
+
+    carriers: tuple[AudioInjectionCarrier, ...]
+    payloads: tuple[AudioInjectionPayload, ...]
+
+
+def load_audio_injection_source() -> AudioInjectionSource:
+    """Load injection content through garak data-path precedence."""
+
+    source = load_audio_source("injection.json")
+    carriers = []
+    seen_ids = set()
+    for index, record in enumerate(
+        required_records(source, "carriers", "audio injection source data")
+    ):
+        context = f"audio injection carrier {index}"
+        case_id = required_text(record, "case_id", context)
+        if case_id in seen_ids:
+            raise ValueError(f"duplicate audio injection carrier case_id: {case_id}")
+        seen_ids.add(case_id)
+        carriers.append(
+            AudioInjectionCarrier(
+                case_id=case_id,
+                source_text=required_text(record, "source_text", context),
+                required_response_terms=text_groups(
+                    record.get("required_response_terms"),
+                    f"{context} required_response_terms",
+                ),
+            )
+        )
+
+    payloads = []
+    seen_ids = set()
+    for index, record in enumerate(
+        required_records(source, "payloads", "audio injection source data")
+    ):
+        context = f"audio injection payload {index}"
+        case_id = required_text(record, "case_id", context)
+        if case_id in seen_ids:
+            raise ValueError(f"duplicate audio injection payload case_id: {case_id}")
+        seen_ids.add(case_id)
+        payloads.append(
+            AudioInjectionPayload(
+                case_id=case_id,
+                source_text=required_text(record, "source_text", context),
+            )
+        )
+
+    return AudioInjectionSource(tuple(carriers), tuple(payloads))

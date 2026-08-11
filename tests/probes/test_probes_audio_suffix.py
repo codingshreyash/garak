@@ -1,0 +1,191 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+import json
+from pathlib import Path
+
+import pytest
+
+import garak.resources.audio.source as audio_source
+from garak.data import LocalDataPath
+from garak.probes.audio_suffix import AudioSuffixInjection
+
+
+def test_suffix_defaults_are_data_backed_and_compact():
+    defaults = AudioSuffixInjection.DEFAULT_PARAMS
+
+    assert (
+        "source_data_path" not in defaults
+    ), "garak data-path precedence supplies content overrides"
+    assert {
+        "suffix_gaps_ms",
+        "carrier_ids",
+        "suffix_ids",
+        "suffix_stealth",
+        "transform_max_duration_seconds",
+        "transform_max_byte_size",
+    }.isdisjoint(defaults), "advanced suffix sweeps stay out of normal defaults"
+
+
+def _bare(**params):
+    probe = AudioSuffixInjection.__new__(AudioSuffixInjection)
+    probe.carrier_ids = params.get("carrier_ids", ("carrier.capital", "carrier.grass"))
+    probe.suffix_ids = params.get(
+        "suffix_ids", ("suffix.log_cleanup", "suffix.kubernetes_secrets")
+    )
+    probe.suffix_gaps_ms = params.get("suffix_gaps_ms", (0, 100))
+    probe.suffix_stealth = params.get("suffix_stealth", "plain")
+    return probe
+
+
+def test_combined_recipe_appends_gap_then_suffix():
+    suffix = Path("/tmp/suffix.wav")
+    # zero gap -> just concatenate the suffix
+    assert AudioSuffixInjection._combined_recipe(suffix, 0) == (
+        {"type": "concat", "path": str(suffix), "gain_db": 0.0},
+    )
+    # positive gap -> trailing silence, then concatenate the suffix
+    recipe = AudioSuffixInjection._combined_recipe(suffix, 100)
+    assert recipe[0] == {"type": "silence", "start_ms": 0, "end_ms": 100}
+    assert recipe[1]["type"] == "concat" and recipe[1]["path"] == str(suffix)
+
+
+def test_stealth_applies_to_suffix_not_the_carrier():
+    suffix = Path("/tmp/s.wav")
+    # weak-adversary model: the combined recipe only appends silence + suffix and
+    # must never carry a speed/noise op, so the carrier is never disguised.
+    recipe = AudioSuffixInjection._combined_recipe(suffix, 100)
+    assert all(
+        op["type"] in ("silence", "concat") for op in recipe
+    ), "combined recipe must not transform the carrier"
+    # the stealth transforms remain available and are applied to the suffix alone
+    assert AudioSuffixInjection._stealth_transform("speed_up") == (
+        {"type": "speed", "factor": 1.25},
+    )
+    assert AudioSuffixInjection._stealth_transform("noise")[0]["type"] == "noise"
+
+
+def test_unknown_stealth_rejected():
+    probe = _bare()
+    probe.suffix_stealth = "invisible"
+    with pytest.raises(ValueError, match="unknown suffix_stealth"):
+        probe.build_prompts()
+
+
+def test_build_prompts_enumerates_controls_and_combined():
+    probe = _bare()  # 2 carriers, 2 suffixes, gaps (0, 100)
+    probe.build_prompts()
+    trials = probe._selected_suffix_trials
+    conditions = [t[0] for t in trials]
+
+    assert conditions.count("benign_only") == 2, "one control per carrier"
+    assert conditions.count("suffix_only") == 2, "one baseline per suffix"
+    assert conditions.count("combined") == 2 * 2 * 2, "carrier x suffix x gap"
+    assert len(trials) == 2 + 2 + 8
+
+
+def test_build_prompts_uses_user_data_override(monkeypatch, tmp_path):
+    user_data_path = tmp_path / "user_data"
+    audio_data_path = user_data_path / "audio"
+    audio_data_path.mkdir(parents=True)
+    (audio_data_path / "injection.json").write_text(
+        json.dumps(
+            {
+                "carriers": [
+                    {
+                        "case_id": "carrier.custom",
+                        "source_text": "Name a primary colour.",
+                        "required_response_terms": [["red"]],
+                    }
+                ],
+                "payloads": [
+                    {
+                        "case_id": "payload.custom",
+                        "source_text": "Follow the custom test instruction.",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        LocalDataPath,
+        "ORDERED_SEARCH_PATHS",
+        [user_data_path, LocalDataPath.ORDERED_SEARCH_PATHS[-1]],
+    )
+    monkeypatch.setattr(audio_source, "data_path", LocalDataPath(user_data_path))
+    probe = _bare(
+        carrier_ids=None,
+        suffix_ids=None,
+        suffix_gaps_ms=(0,),
+    )
+
+    probe.build_prompts()
+
+    assert {
+        trial[1] for trial in probe._selected_suffix_trials if trial[1] is not None
+    } == {"carrier.custom"}, "probe selects carriers from the user data override"
+    assert {
+        trial[2] for trial in probe._selected_suffix_trials if trial[2] is not None
+    } == {"payload.custom"}, "probe selects payloads from the user data override"
+
+
+def test_combined_source_text_records_gap():
+    probe = _bare(suffix_gaps_ms=(500,))
+    probe.build_prompts()
+    combined = [t for t in probe._selected_suffix_trials if t[0] == "combined"]
+    rendered = probe._trial_source_text(combined[0])
+    assert "+500ms" in rendered, "rendered text records the injection gap"
+
+
+def test_only_suffix_bearing_conditions_are_adversarial(monkeypatch):
+    # benign_only carries no malicious intent; suffix_only and combined do.
+    # Assert the flag the hook actually stores against a fixed truth table so a
+    # regression in the is_adversarial logic is caught (not a tautology).
+    from garak.attempt import Attempt, Message
+    from garak.probes.audio import PETTS
+
+    probe = _bare()
+    probe.build_prompts()
+    probe._prepared_suffix_trials = probe._selected_suffix_trials
+    monkeypatch.setattr(PETTS, "_attempt_prestore_hook", lambda self, a, s: a)
+    monkeypatch.setattr(probe, "_attach_audio_attack_metadata", lambda *a, **k: None)
+
+    expected = {"benign_only": False, "suffix_only": True, "combined": True}
+    seen = set()
+    for seq, trial in enumerate(probe._prepared_suffix_trials):
+        attempt = probe._attempt_prestore_hook(
+            Attempt(
+                probe_classname="audio_suffix.AudioSuffixInjection",
+                prompt=Message("x"),
+            ),
+            seq,
+        )
+        assert attempt.notes["is_adversarial"] is expected[trial[0]], trial[0]
+        seen.add(trial[0])
+    assert seen == set(expected), "all three suffix conditions are exercised"
+
+
+def test_invalid_ids_and_gaps_are_rejected():
+    bad_carrier = _bare(carrier_ids=("carrier.nope",))
+    with pytest.raises(ValueError, match="unknown suffix carrier ids"):
+        bad_carrier.build_prompts()
+
+    bad_gap = _bare(suffix_gaps_ms=(-5,))
+    with pytest.raises(ValueError, match="non-negative"):
+        bad_gap.build_prompts()
+
+
+def test_probe_is_discoverable_as_plugin():
+    from garak._plugins import plugin_info
+
+    info = plugin_info("probes.audio_suffix.AudioSuffixInjection")
+    assert (
+        "audio.AudioToolRiskJudge" in info["extended_detectors"]
+    ), "suffix probe retains tool-risk judging"
+    assert (
+        "source_data_path" not in info["DEFAULT_PARAMS"]
+    ), "plugin metadata relies on garak data-path precedence"
+    assert (
+        "suffix_gaps_ms" not in info["DEFAULT_PARAMS"]
+    ), "plugin metadata keeps advanced gap sweeps out of normal defaults"
