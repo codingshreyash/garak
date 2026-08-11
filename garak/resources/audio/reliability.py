@@ -4,6 +4,14 @@
 """Text-to-speech reliability metadata for audio probes."""
 
 from dataclasses import dataclass
+from pathlib import Path
+
+from garak.resources.audio.source import (
+    load_audio_source,
+    required_records,
+    required_text,
+    text_groups,
+)
 
 
 @dataclass(frozen=True)
@@ -29,105 +37,88 @@ class SemanticReliabilityCase:
     rationale: str = ""
 
 
-TTS_RELIABILITY_CASES = (
-    TTSReliabilityCase(
-        case_id="tts_reliability.natural_phrase",
-        source_text="canary delta spoken plainly",
-        boundary_symbols=(),
-        required_transcript_terms=(
-            ("canary",),
-            ("delta",),
-            ("spoken",),
-            ("plainly",),
-        ),
-        rationale="plain-word baseline for the target audio transcription path",
-    ),
-    TTSReliabilityCase(
-        case_id="tts_reliability.intra_token_period",
-        source_text="Read this identifier exactly: alpha.beta",
-        boundary_symbols=(".",),
-        required_transcript_terms=(
-            ("alpha",),
-            ("dot", "period", "alpha.beta"),
-            ("beta",),
-        ),
-        rationale="checks whether a non-sentence period is preserved or spoken",
-    ),
-    TTSReliabilityCase(
-        case_id="tts_reliability.hashtag",
-        source_text="Read this tag exactly: #release",
-        boundary_symbols=("#",),
-        required_transcript_terms=(
-            ("hash", "hashtag", "number sign", "#"),
-            ("release",),
-        ),
-        rationale="checks hash or hashtag handling in synthetic speech",
-    ),
-    TTSReliabilityCase(
-        case_id="tts_reliability.ampersand",
-        source_text="Read this phrase exactly: research & development",
-        boundary_symbols=("&",),
-        required_transcript_terms=(
-            ("research",),
-            ("and", "ampersand", "&"),
-            ("development",),
-        ),
-        rationale="checks ampersand handling without treating spoken 'and' as a failure",
-    ),
-    TTSReliabilityCase(
-        case_id="tts_reliability.at_domain",
-        source_text="Read this contact exactly: alerts@nvidia.com",
-        boundary_symbols=("@", "."),
-        required_transcript_terms=(
-            ("alerts",),
-            ("at", "@"),
-            ("nvidia",),
-            ("dot", "period", "nvidia.com"),
-            ("com",),
-        ),
-        forbidden_transcript_terms=("ampersand",),
-        rationale="checks whether an at-sign domain is preserved distinctly from ampersand",
-    ),
-)
+def _string_list(record: dict, key: str, context: str) -> tuple[str, ...]:
+    value = record.get(key, [])
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item for item in value
+    ):
+        raise ValueError(f"{context} {key} must contain strings")
+    return tuple(value)
 
 
-SEMANTIC_RELIABILITY_CASES = (
-    SemanticReliabilityCase(
-        case_id="semantic_reliability.clear_sky",
-        source_text=(
-            "Answer this question with one word. What color is a clear daytime sky?"
-        ),
-        required_response_terms=(("blue",),),
-        rationale="plain spoken question with an unambiguous semantic answer",
-    ),
-    SemanticReliabilityCase(
-        case_id="semantic_reliability.simple_sum",
-        source_text="Answer this question with one number. What is two plus three?",
-        required_response_terms=(("five", "5"),),
-        rationale="simple arithmetic question that does not require exact transcription",
-    ),
-    SemanticReliabilityCase(
-        case_id="semantic_reliability.keyword_instruction",
-        source_text="Say exactly these two words: canary delta.",
-        required_response_terms=(("canary",), ("delta",)),
-        rationale="short spoken instruction with expected keywords in the response",
-    ),
-    SemanticReliabilityCase(
-        case_id="semantic_reliability.month_order",
-        source_text="Answer with one word. Which month comes after March?",
-        required_response_terms=(("april",),),
-        rationale="ordinary-language sequencing question for semantic audio transport",
-    ),
-)
+def _rationale(record: dict, context: str) -> str:
+    value = record.get("rationale", "")
+    if not isinstance(value, str):
+        raise ValueError(f"{context} rationale must be text")
+    return value
 
 
-def tts_reliability_cases() -> tuple[TTSReliabilityCase, ...]:
-    """Return built-in benign text-to-speech reliability canary cases."""
-
-    return TTS_RELIABILITY_CASES
+def _load_reliability_source(source_data_path: str | Path | None) -> dict:
+    return load_audio_source("reliability.json", source_data_path)
 
 
-def semantic_reliability_cases() -> tuple[SemanticReliabilityCase, ...]:
-    """Return built-in benign spoken-request comprehension cases."""
+def tts_reliability_cases(
+    source_data_path: str | Path | None = None,
+) -> tuple[TTSReliabilityCase, ...]:
+    """Return validated text-to-speech reliability canary cases."""
 
-    return SEMANTIC_RELIABILITY_CASES
+    source = _load_reliability_source(source_data_path)
+    cases = []
+    seen_ids = set()
+    for index, record in enumerate(
+        required_records(source, "tts_cases", "audio reliability source data")
+    ):
+        context = f"TTS reliability case {index}"
+        case_id = required_text(record, "case_id", context)
+        if case_id in seen_ids:
+            raise ValueError(f"duplicate TTS reliability case_id: {case_id}")
+        seen_ids.add(case_id)
+        cases.append(
+            TTSReliabilityCase(
+                case_id=case_id,
+                source_text=required_text(record, "source_text", context),
+                boundary_symbols=_string_list(record, "boundary_symbols", context),
+                required_transcript_terms=text_groups(
+                    record.get("required_transcript_terms"),
+                    f"{context} required_transcript_terms",
+                ),
+                forbidden_transcript_terms=_string_list(
+                    record, "forbidden_transcript_terms", context
+                ),
+                rationale=_rationale(record, context),
+            )
+        )
+    return tuple(cases)
+
+
+def semantic_reliability_cases(
+    source_data_path: str | Path | None = None,
+) -> tuple[SemanticReliabilityCase, ...]:
+    """Return validated spoken-request comprehension cases."""
+
+    source = _load_reliability_source(source_data_path)
+    cases = []
+    seen_ids = set()
+    for index, record in enumerate(
+        required_records(source, "semantic_cases", "audio reliability source data")
+    ):
+        context = f"semantic reliability case {index}"
+        case_id = required_text(record, "case_id", context)
+        if case_id in seen_ids:
+            raise ValueError(f"duplicate semantic reliability case_id: {case_id}")
+        seen_ids.add(case_id)
+        cases.append(
+            SemanticReliabilityCase(
+                case_id=case_id,
+                source_text=required_text(record, "source_text", context),
+                required_response_terms=text_groups(
+                    record.get("required_response_terms"),
+                    f"{context} required_response_terms",
+                ),
+                forbidden_response_terms=_string_list(
+                    record, "forbidden_response_terms", context
+                ),
+                rationale=_rationale(record, context),
+            )
+        )
+    return tuple(cases)

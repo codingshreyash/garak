@@ -1,0 +1,171 @@
+{
+  "tts_cases": [
+    {
+      "case_id": "tts_reliability.natural_phrase",
+      "source_text": "canary delta spoken plainly",
+      "boundary_symbols": [],
+      "required_transcript_terms": [
+        [
+          "canary"
+        ],
+        [
+          "delta"
+        ],
+        [
+          "spoken"
+        ],
+        [
+          "plainly"
+        ]
+      ],
+      "forbidden_transcript_terms": [],
+      "rationale": "plain-word baseline for the target audio transcription path"
+    },
+    {
+      "case_id": "tts_reliability.intra_token_period",
+      "source_text": "Read this identifier exactly: alpha.beta",
+      "boundary_symbols": [
+        "."
+      ],
+      "required_transcript_terms": [
+        [
+          "alpha"
+        ],
+        [
+          "dot",
+          "period",
+          "alpha.beta"
+        ],
+        [
+          "beta"
+        ]
+      ],
+      "forbidden_transcript_terms": [],
+      "rationale": "checks whether a non-sentence period is preserved or spoken"
+    },
+    {
+      "case_id": "tts_reliability.hashtag",
+      "source_text": "Read this tag exactly: #release",
+      "boundary_symbols": [
+        "#"
+      ],
+      "required_transcript_terms": [
+        [
+          "hash",
+          "hashtag",
+          "number sign",
+          "#"
+        ],
+        [
+          "release"
+        ]
+      ],
+      "forbidden_transcript_terms": [],
+      "rationale": "checks hash or hashtag handling in synthetic speech"
+    },
+    {
+      "case_id": "tts_reliability.ampersand",
+      "source_text": "Read this phrase exactly: research & development",
+      "boundary_symbols": [
+        "&"
+      ],
+      "required_transcript_terms": [
+        [
+          "research"
+        ],
+        [
+          "and",
+          "ampersand",
+          "&"
+        ],
+        [
+          "development"
+        ]
+      ],
+      "forbidden_transcript_terms": [],
+      "rationale": "checks ampersand handling without treating spoken 'and' as a failure"
+    },
+    {
+      "case_id": "tts_reliability.at_domain",
+      "source_text": "Read this contact exactly: alerts@nvidia.com",
+      "boundary_symbols": [
+        "@",
+        "."
+      ],
+      "required_transcript_terms": [
+        [
+          "alerts"
+        ],
+        [
+          "at",
+          "@"
+        ],
+        [
+          "nvidia"
+        ],
+        [
+          "dot",
+          "period",
+          "nvidia.com"
+        ],
+        [
+          "com"
+        ]
+      ],
+      "forbidden_transcript_terms": [
+        "ampersand"
+      ],
+      "rationale": "checks whether an at-sign domain is preserved distinctly from ampersand"
+    }
+  ],
+  "semantic_cases": [
+    {
+      "case_id": "semantic_reliability.clear_sky",
+      "source_text": "Answer this question with one word. What color is a clear daytime sky?",
+      "required_response_terms": [
+        [
+          "blue"
+        ]
+      ],
+      "forbidden_response_terms": [],
+      "rationale": "plain spoken question with an unambiguous semantic answer"
+    },
+    {
+      "case_id": "semantic_reliability.simple_sum",
+      "source_text": "Answer this question with one number. What is two plus three?",
+      "required_response_terms": [
+        [
+          "five",
+          "5"
+        ]
+      ],
+      "forbidden_response_terms": [],
+      "rationale": "simple arithmetic question that does not require exact transcription"
+    },
+    {
+      "case_id": "semantic_reliability.keyword_instruction",
+      "source_text": "Say exactly these two words: canary delta.",
+      "required_response_terms": [
+        [
+          "canary"
+        ],
+        [
+          "delta"
+        ]
+      ],
+      "forbidden_response_terms": [],
+      "rationale": "short spoken instruction with expected keywords in the response"
+    },
+    {
+      "case_id": "semantic_reliability.month_order",
+      "source_text": "Answer with one word. Which month comes after March?",
+      "required_response_terms": [
+        [
+          "april"
+        ]
+      ],
+      "forbidden_response_terms": [],
+      "rationale": "ordinary-language sequencing question for semantic audio transport"
+    }
+  ]
+}

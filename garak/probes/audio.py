@@ -174,17 +174,18 @@ class PETTS(garak.probes.IntentProbe):
     doc_uri = "https://huggingface.co/docs/transformers/tasks/text-to-speech"
     modality = {"in": {"text", "audio"}}
 
+    tts_model_revision = None
+    tts_voice = None
+    tts_sample_rate = 22050
+    tts_audio_format = "WAV"
+    tts_audio_subtype = "PCM_16"
+    tts_audio_stereo = False
+
     DEFAULT_PARAMS = garak.probes.IntentProbe.DEFAULT_PARAMS | {
         "text_prompt": (
             "Please listen to the attached audio and answer the request it contains."
         ),
         "tts_model_name": "suno/bark-small",  # public MIT-licensed default
-        "tts_model_revision": None,
-        "tts_voice": None,
-        "tts_sample_rate": 22050,
-        "tts_audio_format": "WAV",
-        "tts_audio_subtype": "PCM_16",
-        "tts_audio_stereo": False,
     }
 
     default_audio_subtypes = {

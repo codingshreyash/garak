@@ -10,6 +10,25 @@ import garak.probes.audio
 import garak.services.intentservice
 
 
+def test_petts_advertises_only_primary_synthesis_options():
+    advanced_options = {
+        "tts_model_revision",
+        "tts_voice",
+        "tts_sample_rate",
+        "tts_audio_format",
+        "tts_audio_subtype",
+        "tts_audio_stereo",
+    }
+
+    assert advanced_options.isdisjoint(
+        garak.probes.audio.PETTS.DEFAULT_PARAMS
+    ), "advanced synthesis tuning stays out of the default user-facing config"
+    assert (
+        len(garak.probes.audio.PETTS.DEFAULT_PARAMS)
+        <= len(garak.probes.IntentProbe.DEFAULT_PARAMS) + 2
+    ), "PETTS adds only the prompt and synthesis model to normal defaults"
+
+
 @pytest.fixture()
 def petts_probe(monkeypatch, tmp_path) -> garak.probes.audio.PETTS:
     _config.load_config()
