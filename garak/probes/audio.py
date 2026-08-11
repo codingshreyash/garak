@@ -8,7 +8,6 @@ Base spoken-request probe (`PETTS`) and the audio-modality probes it powers.
 
 import hashlib
 import logging
-import pickle
 from pathlib import Path
 import re
 from typing import Iterable
@@ -161,6 +160,7 @@ class PETTS(garak.probes.IntentProbe):
     lang = "*"
     active = False
     extra_dependency_names = ["soundfile"]
+    _unsafe_attributes = ["_tts_model"]
     tags = [
         "avid-effect:security:S0403",  # uses speech as an adversarial input form
         "avid-effect:performance:P0204",  # tests whether audio input changes target accuracy
@@ -200,23 +200,6 @@ class PETTS(garak.probes.IntentProbe):
         self.tts_audio_format = self.tts_audio_format.upper()
         self.audio_cache_dir = self._audio_cache_dir()
         self.audio_cache_dir.mkdir(mode=0o740, parents=True, exist_ok=True)
-
-    def __getstate__(self):
-        # ``--parallel_attempts`` pickles the bound ``_execute_attempt`` (and so
-        # this probe) into worker processes. Lazily-loaded caches — the TTS
-        # pipeline (parametrized/CUDA modules), lang providers, imported modules
-        # — are not picklable. Audio is synthesized in ``build_prompts`` in the
-        # parent before parallel execution, and workers only read the pre-built
-        # WAV via ``data_path`` and call the (picklable) generator, so any
-        # unpicklable attribute is a parent-only cache and can be dropped.
-        state = dict(self.__dict__)
-        state["_tts_model"] = None
-        for key, value in list(state.items()):
-            try:
-                pickle.dumps(value)
-            except Exception:
-                state[key] = None
-        return state
 
     def build_prompts(self):
         """Build text prompts and retain the text that will become audio."""

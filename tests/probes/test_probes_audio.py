@@ -56,6 +56,16 @@ def test_petts_ensure_audio_file_writes_to_cache(petts_probe, monkeypatch):
     assert len(synthesis_calls) == 1, "reuses cached audio without re-synthesising"
 
 
+def test_petts_excludes_tts_model_from_serialised_state(petts_probe):
+    model = object()
+    petts_probe._tts_model = model
+
+    state = petts_probe.__getstate__()
+
+    assert state["_tts_model"] is None, "drops the unsafe TTS model from worker state"
+    assert petts_probe._tts_model is model, "does not mutate the parent probe cache"
+
+
 def test_petts_audio_format_is_configurable(petts_probe):
     petts_probe.tts_audio_format = "OGG"
     petts_probe.tts_audio_subtype = "VORBIS"
