@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass, field, asdict, is_dataclass
 from copy import deepcopy
-import json
 from pathlib import Path
 from types import GeneratorType
 from typing import List, Optional, Union, Tuple
@@ -17,80 +16,6 @@ from garak.exception import GarakException
 ) = range(3)
 
 roles = {"system", "user", "assistant"}
-
-
-@dataclass(frozen=True)
-class ToolCall:
-    """Provider-neutral structured tool call returned by a target.
-
-    :param name: Tool or function name
-    :type name: str
-    :param arguments: Provider-supplied tool arguments
-    :type arguments: object
-    :param id: Provider-supplied call identifier
-    :type id: str
-    :param type: Provider-supplied call type
-    :type type: str
-    :param source: Response field or provider syntax containing the call
-    :type source: str
-    """
-
-    name: str
-    arguments: object = None
-    id: Optional[str] = None
-    type: Optional[str] = None
-    source: Optional[str] = None
-
-    @classmethod
-    def from_value(cls, value: object) -> Optional["ToolCall"]:
-        """Normalise a structured call object or dictionary."""
-
-        if isinstance(value, cls):
-            return value if value.name.strip() else None
-        if not isinstance(value, dict):
-            return None
-
-        function = value.get("function")
-        payload = function if isinstance(function, dict) else value
-        name = payload.get("name")
-        if not isinstance(name, str) or not name.strip():
-            return None
-
-        return cls(
-            name=str(name).strip(),
-            arguments=payload.get(
-                "arguments", payload.get("input", payload.get("parameters"))
-            ),
-            id=value.get("id") if isinstance(value.get("id"), str) else None,
-            type=value.get("type") if isinstance(value.get("type"), str) else None,
-            source=(
-                value.get("source") if isinstance(value.get("source"), str) else None
-            ),
-        )
-
-    def argument_text(self, keys: Tuple[str, ...]) -> Optional[str]:
-        """Return a textual argument selected from the supplied field names."""
-
-        arguments = self.arguments
-        if isinstance(arguments, str):
-            stripped = arguments.strip()
-            if not stripped:
-                return None
-            try:
-                arguments = json.loads(stripped)
-            except json.JSONDecodeError:
-                return stripped
-
-        if not isinstance(arguments, dict):
-            return None
-        for key in keys:
-            value = arguments.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        argv = arguments.get("argv")
-        if isinstance(argv, list) and all(isinstance(item, str) for item in argv):
-            return " ".join(argv)
-        return None
 
 
 @dataclass
@@ -124,43 +49,6 @@ class Message:
     data_type: Optional[Tuple[str | None, str | None]] = None
     data_checksum: Optional[str] = None
     notes: Optional[dict] = field(default_factory=dict)
-
-    def __post_init__(self):
-        """Normalise structured metadata after dataclass construction."""
-
-        if self.notes is None:
-            self.notes = {}
-        if "tool_calls" in self.notes:
-            self.tool_calls = self.notes["tool_calls"]
-
-    @property
-    def tool_calls(self) -> List[ToolCall]:
-        """Structured tool calls associated with this message."""
-
-        values = self.notes.get("tool_calls", [])
-        if not isinstance(values, list):
-            return []
-        normalised = []
-        for value in values:
-            tool_call = ToolCall.from_value(value)
-            if tool_call is not None:
-                normalised.append(tool_call)
-        if normalised != values:
-            self.notes["tool_calls"] = normalised
-        return normalised
-
-    @tool_calls.setter
-    def tool_calls(self, values: List[ToolCall | dict]) -> None:
-        """Store only valid provider-neutral tool calls."""
-
-        if not isinstance(values, list):
-            raise TypeError("tool_calls must be a list")
-        normalised = []
-        for value in values:
-            tool_call = ToolCall.from_value(value)
-            if tool_call is not None:
-                normalised.append(tool_call)
-        self.notes["tool_calls"] = normalised
 
     @property
     def data(self):

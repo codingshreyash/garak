@@ -56,6 +56,20 @@ def test_audio_file_metadata_reads_wav_properties(tmp_path):
     assert len(metadata["sha256"]) == 64, "records the audio checksum"
 
 
+def test_audio_file_metadata_inspects_extensionless_wav(tmp_path):
+    audio_path = tmp_path / "sample"
+    with wave.open(str(audio_path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(8000)
+        wav_file.writeframes(b"\x00\x00" * 800)
+
+    metadata = audio_file_metadata(audio_path)
+
+    assert metadata["format"] == "wav", "detects WAV content without a suffix"
+    assert metadata["sample_rate"] == 8000, "inspects detected WAV properties"
+
+
 def test_attach_audio_attack_metadata_validates_indices():
     attempt = Attempt(prompt=Message("test"))
     metadata = AudioAttackMetadata(
@@ -96,6 +110,17 @@ def test_audio_group_summary_reports_any_scoreable_success():
     assert summary["attack_successes"] == 1, "counts primary detector hits"
     assert summary["group_attack_success"] is True, "uses Best-of-N semantics"
     assert summary["status"] == "attack_success", "labels group status"
+
+
+def test_audio_group_summary_includes_default_threshold_boundary():
+    summary = summarize_audio_groups(
+        [_attempt("group.one", 0.5, 0.0)], "audio.Primary"
+    )["group.one"]
+
+    assert summary["attack_successes"] == 1, "score 0.5 meets the default threshold"
+    assert (
+        summary["group_attack_success"] is True
+    ), "live summary matches JSONL semantics"
 
 
 def test_audio_group_summary_marks_all_invalid_group_unscored():

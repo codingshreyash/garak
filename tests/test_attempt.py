@@ -84,29 +84,6 @@ def test_message_internal_serialize():
     assert src == dest
 
 
-def test_message_tool_calls_round_trip_as_structured_metadata():
-    import dataclasses
-
-    src = garak.attempt.Message(text="")
-    src.tool_calls = [
-        garak.attempt.ToolCall(
-            name="bash",
-            arguments={"command": "printf hello"},
-            id="call-1",
-            type="function",
-            source="response.tool_calls",
-        )
-    ]
-
-    serialised = dataclasses.asdict(src)
-    dest = garak.attempt.Message(**serialised)
-
-    assert dest == src, "structured tool calls survive message serialisation"
-    assert (
-        dest.tool_calls[0].argument_text(("command",)) == "printf hello"
-    ), "structured tool arguments remain available without flattening message text"
-
-
 #####################
 # Test Turn object #
 #####################

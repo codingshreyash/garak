@@ -7,11 +7,9 @@ import respx
 import pytest
 import importlib
 import inspect
-from types import SimpleNamespace
-
 from collections.abc import Iterable
 
-from garak.attempt import Message, ToolCall, Turn, Conversation
+from garak.attempt import Message, Turn, Conversation
 from garak.generators.openai import OpenAICompatible
 from garak.generators.rest import RestGenerator
 
@@ -147,38 +145,6 @@ def test_openai_multiple_generations():
     assert (
         oai_klass.supports_multiple_generations == True
     ), "OpenAI access expected to correctly support multiple generations by default"
-
-
-def test_openai_compatible_preserves_structured_tool_calls():
-    generator = OpenAICompatible.__new__(OpenAICompatible)
-    response_message = SimpleNamespace(
-        content=None,
-        tool_calls=[
-            SimpleNamespace(
-                model_dump=lambda: {
-                    "id": "call-1",
-                    "type": "function",
-                    "function": {
-                        "name": "lookup",
-                        "arguments": '{"query":"garak"}',
-                    },
-                }
-            )
-        ],
-    )
-
-    message = generator._message_from_chat_response(response_message)
-
-    assert message.text == "", "tool-only responses retain an empty text channel"
-    assert message.tool_calls == [
-        ToolCall(
-            name="lookup",
-            arguments='{"query":"garak"}',
-            id="call-1",
-            type="function",
-            source="response.tool_calls",
-        )
-    ], "tool calls use the provider-neutral message contract"
 
 
 def test_openai_compatible_normalises_mp3_audio_payload(tmp_path):

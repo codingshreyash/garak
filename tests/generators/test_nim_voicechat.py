@@ -9,7 +9,7 @@ import wave
 
 import pytest
 
-from garak.attempt import Conversation, Message, ToolCall, Turn
+from garak.attempt import Conversation, Message, Turn
 from garak.exception import GarakException
 from garak.generators.nim import NVVoiceChat
 
@@ -48,9 +48,8 @@ def _vc_config(api_key="test-key", **extra):
 
 
 class _FakeSDKMessage:
-    def __init__(self, content=None, tool_calls=None):
+    def __init__(self, content=None):
         self.content = content
-        self.tool_calls = tool_calls
 
 
 class _FakeSDKChoice:
@@ -59,16 +58,8 @@ class _FakeSDKChoice:
 
 
 class _FakeSDKResponse:
-    def __init__(self, content="Hello, I can help with that.", tool_calls=None):
-        self.choices = [_FakeSDKChoice(_FakeSDKMessage(content, tool_calls))]
-
-
-class _FakeToolCall:
-    def __init__(self, payload):
-        self._payload = payload
-
-    def model_dump(self):
-        return self._payload
+    def __init__(self, content="Hello, I can help with that."):
+        self.choices = [_FakeSDKChoice(_FakeSDKMessage(content))]
 
 
 def _stub_create(gen, monkeypatch, *, response=None, capture=None, error=None):
@@ -116,11 +107,6 @@ def _audio_block(messages):
     return None
 
 
-def test_nv_voice_chat_requires_model_name():
-    with pytest.raises(ValueError, match="requires model name"):
-        NVVoiceChat(config_root=_vc_config())
-
-
 def test_nv_voice_chat_sends_input_audio_and_reads_text(monkeypatch, tmp_path):
     import base64
 
@@ -147,13 +133,25 @@ def test_nv_voice_chat_forwards_generate_audio_in_extra_body(monkeypatch, tmp_pa
     audio_path = tmp_path / "q.wav"
     audio_path.write_bytes(_make_wav())
     capture = []
-    gen = NVVoiceChat("voice-chat", config_root=_vc_config(trailing_silence_ms=0))
+    configured_extra_body = {"generate_audio": True, "vendor_option": "enabled"}
+    gen = NVVoiceChat(
+        "voice-chat",
+        config_root=_vc_config(
+            trailing_silence_ms=0,
+            extra_body=configured_extra_body,
+        ),
+    )
     _stub_create(gen, monkeypatch, capture=capture)
 
     gen._call_model(
         Conversation([Turn("user", Message("ask", data_path=str(audio_path)))])
     )
-    assert capture[0]["extra_body"]["generate_audio"] is True
+    assert (
+        capture[0]["extra_body"] == configured_extra_body
+    ), "forwards configured request body"
+    assert (
+        gen.extra_body == configured_extra_body
+    ), "prompt preparation is side-effect free"
 
 
 def test_nv_voice_chat_passes_configured_timeout_per_request(monkeypatch, tmp_path):
@@ -243,56 +241,6 @@ def test_nv_voice_chat_empty_content_returns_empty_text(monkeypatch, tmp_path):
     assert result[0].text == ""
 
 
-def test_nv_voice_chat_preserves_structured_tool_calls(monkeypatch, tmp_path):
-    audio_path = tmp_path / "q.wav"
-    audio_path.write_bytes(_make_wav())
-    tool_call = _FakeToolCall(
-        {"function": {"name": "get_stock_price", "arguments": '{"ticker":"NVDA"}'}}
-    )
-    gen = NVVoiceChat("voice-chat", config_root=_vc_config(trailing_silence_ms=0))
-    _stub_create(
-        gen,
-        monkeypatch,
-        response=_FakeSDKResponse(content=None, tool_calls=[tool_call]),
-    )
-
-    result = gen._call_model(
-        Conversation([Turn("user", Message("ask", data_path=str(audio_path)))])
-    )
-    assert result[0].text == ""
-    assert result[0].tool_calls == [
-        ToolCall(
-            name="get_stock_price",
-            arguments='{"ticker":"NVDA"}',
-            source="response.tool_calls",
-        )
-    ], "provider calls must retain native provenance outside transcript text"
-
-
-def test_nv_voice_chat_preserves_nemotron_toolcall_blocks(monkeypatch, tmp_path):
-    audio_path = tmp_path / "q.wav"
-    audio_path.write_bytes(_make_wav())
-    content = (
-        'Okay. <TOOLCALL>[{"name":"bash","arguments":{"command":"printf safe"}}]'
-        "</TOOLCALL>"
-    )
-    gen = NVVoiceChat("voice-chat", config_root=_vc_config(trailing_silence_ms=0))
-    _stub_create(gen, monkeypatch, response=_FakeSDKResponse(content=content))
-
-    result = gen._call_model(
-        Conversation([Turn("user", Message("ask", data_path=str(audio_path)))])
-    )
-
-    assert result[0].text == content, "preserves the provider's textual response"
-    assert result[0].tool_calls == [
-        ToolCall(
-            name="bash",
-            arguments={"command": "printf safe"},
-            source="nemotron_toolcall_block",
-        )
-    ], "retains provider-recognised Nemotron calls as structured metadata"
-
-
 def test_nv_voice_chat_rejects_missing_audio(monkeypatch):
     gen = NVVoiceChat("voice-chat", config_root=_vc_config())
     _stub_create(gen, monkeypatch)
@@ -322,9 +270,3 @@ def test_nv_voice_chat_rejects_oversize_audio(monkeypatch, tmp_path):
         gen._call_model(
             Conversation([Turn("user", Message("ask", data_path=str(audio_path)))])
         )
-
-
-def test_nv_voice_chat_has_no_audio_output_params():
-    """Audio-output handling was removed; these params must not exist."""
-    assert "response_audio_dir" not in NVVoiceChat.DEFAULT_PARAMS
-    assert "asr_uri" not in NVVoiceChat.DEFAULT_PARAMS

@@ -159,6 +159,42 @@ def test_candidate_validation_accepts_required_competing_phrases(tmp_path):
     ), "manifest records phrase-coverage validation"
 
 
+def test_candidate_validation_matches_required_phrases_on_word_boundaries(tmp_path):
+    path = tmp_path / "candidate.wav"
+    _write_wav(path)
+    record = _record(path) | {"required_transcript_phrases": ["art"]}
+
+    result = validate_candidate(
+        record,
+        transcriber=lambda _: Transcript("A partial transcript", "test-asr"),
+    )
+
+    assert (
+        result["validation"]["scoreable"] is False
+    ), "partial-word matches cannot validate required phrases"
+    assert result["validation"]["missing_transcript_phrases"] == [
+        "art"
+    ], "manifest records the unmatched whole-word phrase"
+
+
+def test_candidate_validation_rejects_empty_required_phrase_list(tmp_path):
+    path = tmp_path / "candidate.wav"
+    _write_wav(path)
+    record = _record(path) | {"required_transcript_phrases": []}
+
+    result = validate_candidate(
+        record,
+        transcriber=lambda _: Transcript("unrelated", "test-asr"),
+    )
+
+    assert (
+        result["validation"]["scoreable"] is False
+    ), "empty phrase requirements cannot bypass transcript agreement"
+    assert (
+        result["validation"]["reason"] == "required_transcript_phrases_invalid"
+    ), "manifest identifies the invalid phrase contract"
+
+
 def test_candidate_validation_records_asr_failure(tmp_path):
     path = tmp_path / "candidate.wav"
     _write_wav(path)
@@ -219,3 +255,13 @@ def test_pcm16_inspection_accepts_supported_channel_counts(tmp_path, channels):
     assert (
         inspect_pcm16_wav(path)["valid"] is True
     ), "mono and stereo PCM16 candidates are structurally valid"
+
+
+def test_pcm16_inspection_uses_content_for_extensionless_wav(tmp_path):
+    path = tmp_path / "candidate"
+    _write_wav(path)
+
+    result = inspect_pcm16_wav(path)
+
+    assert result["valid"] is True, "valid WAV content does not require a suffix"
+    assert result["format"] == "wav", "inspection records the detected WAV format"

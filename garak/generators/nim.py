@@ -3,16 +3,13 @@
 
 """NVIDIA NIM Microservice LLM Interface"""
 
-import json
 import logging
-from pathlib import Path
-import re
 from typing import List, Union
 
 import openai
 
 from garak import _config
-from garak.attempt import Message, ToolCall, Turn, Conversation
+from garak.attempt import Message, Turn, Conversation
 from garak.exception import GarakException
 from garak.generators.openai import OpenAICompatible
 from garak.resources.audio.transforms import append_wav_silence
@@ -55,22 +52,15 @@ class NVOpenAIChat(OpenAICompatible):
     active = True
     supports_multiple_generations = False
     generator_family_name = "NIM"
-    enumerate_models_on_missing_name = True
-    warn_on_unqualified_name = True
 
     def _load_unsafe(self):
         self.client = openai.OpenAI(base_url=self.uri, api_key=self.api_key)
         if self.name in ("", None):
-            if self.enumerate_models_on_missing_name:
-                raise ValueError(
-                    "NIMs require model name to be set, e.g. --target_name mistralai/mistral-8x7b-instruct-v0.1\nCurrent models:\n"
-                    + "\n - ".join(
-                        sorted([entry.id for entry in self.client.models.list().data])
-                    )
-                )
             raise ValueError(
-                f"{self.generator_family_name} requires model name to be set, "
-                "e.g. --target_name <model-served-by-the-endpoint>"
+                "NIMs require model name to be set, e.g. --target_name mistralai/mistral-8x7b-instruct-v0.1\nCurrent models:\n"
+                + "\n - ".join(
+                    sorted([entry.id for entry in self.client.models.list().data])
+                )
             )
         self.generator = self.client.chat.completions
 
@@ -100,17 +90,21 @@ class NVOpenAIChat(OpenAICompatible):
         except openai.UnprocessableEntityError as uee:
             msg = "Model call didn't match endpoint expectations, see log"
             logging.critical(msg, exc_info=uee)
-            raise GarakException(msg) from uee
+            raise GarakException(f"🛑 {msg}") from uee
         except openai.NotFoundError as nfe:
             msg = "NIM endpoint not found. Is the model name spelled correctly and the endpoint URI correct?"
             logging.critical(msg, exc_info=nfe)
-            raise GarakException(msg) from nfe
+            raise GarakException(f"🛑 {msg}") from nfe
+        except Exception as oe:
+            msg = "NIM generation failed. Is the model name spelled correctly?"
+            logging.critical(msg, exc_info=oe)
+            raise GarakException(f"🛑 {msg}") from oe
 
         return result
 
     def __init__(self, name="", config_root=_config):
         super().__init__(name, config_root=config_root)
-        if self.warn_on_unqualified_name and "/" not in self.name:
+        if "/" not in self.name:
             msg = "❓ Is this a valid NIM name? expected a slash-formatted name, e.g. 'org/model'"
             logging.info(msg)
             print(msg)
@@ -262,21 +256,20 @@ class NVVoiceChat(NVOpenAIChat):
 
     Some targets need trailing silence at the end of the audio so they have time
     to finish the response before the stream closes; ``trailing_silence_ms``
-    controls how much is appended (set to 0 to disable).  ``generate_audio`` is
-    forwarded in the request body for shims that require it to trigger the S2S
+    controls how much is appended (set to 0 to disable). ``extra_body`` requests
+    audio generation by default for shims that require it to trigger the S2S
     pipeline, but any returned audio is ignored.
     """
 
     DEFAULT_PARAMS = NVOpenAIChat.DEFAULT_PARAMS | {
         "audio_format": "wav",
-        "generate_audio": True,
         "max_audio_bytes": 25_000_000,
         "trailing_silence_ms": 2000,
         "system_prompt": None,
         "text_prompt": None,
         "tools": None,
         "tool_choice": None,
-        "extra_body": {},
+        "extra_body": {"generate_audio": True},
         "extra_headers": {},
         "timeout": 120,
         # sampling params suppressed; voice shims typically reject them
@@ -299,8 +292,6 @@ class NVVoiceChat(NVOpenAIChat):
     generator_family_name = "NVVoiceChat"
     modality = {"in": {"audio", "text"}, "out": {"text"}}
     audio_formats = {"wav"}
-    enumerate_models_on_missing_name = False
-    warn_on_unqualified_name = False
 
     def _audio_message(self, prompt: Conversation) -> Union[Message, None]:
         if not isinstance(prompt, Conversation):
@@ -335,32 +326,23 @@ class NVVoiceChat(NVOpenAIChat):
                 f"{self.__class__.__name__} expected a prompt containing audio data."
             )
 
-        if audio_msg.data_path is not None:
-            audio_path = Path(audio_msg.data_path)
-            if not audio_path.is_file():
-                raise GarakException(
-                    f"{self.__class__.__name__} audio file not found: {audio_path}"
-                )
-            fmt = audio_path.suffix.lower().lstrip(".")
-            if fmt not in self.audio_formats:
-                raise GarakException(
-                    f"{self.__class__.__name__} expected one of "
-                    f"{sorted(self.audio_formats)} audio formats: {audio_path}"
-                )
-            raw = audio_path.read_bytes()
-        else:
+        try:
             raw = audio_msg.data
-            mime = (audio_msg.data_type or (None, None))[
-                0
-            ] or f"audio/{self.audio_format}"
-            fmt = mime.split("/")[-1]
-            if fmt == "x-wav":
-                fmt = "wav"
-            if fmt not in self.audio_formats:
-                raise GarakException(
-                    f"{self.__class__.__name__} expected one of "
-                    f"{sorted(self.audio_formats)} audio formats: {mime}"
-                )
+        except FileNotFoundError as exc:
+            raise GarakException(
+                f"{self.__class__.__name__} audio file not found: "
+                f"{audio_msg.data_path}"
+            ) from exc
+
+        mime = (audio_msg.data_type or (None, None))[0] or f"audio/{self.audio_format}"
+        fmt = mime.split("/")[-1]
+        if fmt == "x-wav":
+            fmt = "wav"
+        if fmt not in self.audio_formats:
+            raise GarakException(
+                f"{self.__class__.__name__} expected one of "
+                f"{sorted(self.audio_formats)} audio formats: {mime}"
+            )
 
         self._validate_audio_size(raw)
 
@@ -399,37 +381,7 @@ class NVVoiceChat(NVOpenAIChat):
             if self.system_prompt:
                 new_turns.insert(0, Turn("system", Message(self.system_prompt)))
 
-        configured_extra_body = getattr(self, "extra_body", None)
-        extra_body = (
-            dict(configured_extra_body)
-            if isinstance(configured_extra_body, dict)
-            else {}
-        )
-        if self.generate_audio:
-            extra_body.setdefault("generate_audio", True)
-        self.extra_body = extra_body
         return Conversation(new_turns, notes=dict(prompt.notes))
-
-    _NEMOTRON_TOOL_CALL_RE = re.compile(
-        r"<TOOLCALL>\s*(.*?)\s*</TOOLCALL>", re.IGNORECASE | re.DOTALL
-    )
-
-    def _normalise_tool_calls(
-        self, tool_calls: object, content: object = None
-    ) -> list[ToolCall]:
-        normalised = super()._normalise_tool_calls(tool_calls, content)
-        if isinstance(content, str):
-            for match in self._NEMOTRON_TOOL_CALL_RE.finditer(content):
-                try:
-                    payload = json.loads(match.group(1))
-                except json.JSONDecodeError:
-                    continue
-                items = payload if isinstance(payload, list) else [payload]
-                for call in items:
-                    parsed = self._normalise_tool_call(call, "nemotron_toolcall_block")
-                    if parsed is not None:
-                        normalised.append(parsed)
-        return normalised
 
 
 DEFAULT_CLASS = "NVOpenAIChat"

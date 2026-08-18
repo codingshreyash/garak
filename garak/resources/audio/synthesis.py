@@ -112,11 +112,11 @@ class TransformersSynthesisProvider:
             # use a CUDA device when available, else fall back to CPU
             try:
                 import torch
-
+            except ImportError:
+                pass
+            else:
                 if torch.cuda.is_available():
                     arguments["device"] = 0
-            except Exception:
-                pass
             self._pipeline = pipeline("text-to-audio", **arguments)
         return self._pipeline
 

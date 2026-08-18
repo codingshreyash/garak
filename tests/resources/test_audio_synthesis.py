@@ -1,3 +1,6 @@
+import sys
+from types import ModuleType, SimpleNamespace
+
 import pytest
 
 from garak.resources.audio.synthesis import (
@@ -54,3 +57,19 @@ def test_transformers_provider_loads_lazily_and_normalizes_output(monkeypatch):
     assert calls == ["loaded"], "provider loads only when synthesis is requested"
     assert result.sample_rate == 8000, "provider normalizes the effective sample rate"
     assert result.revision == "rev", "provider records the configured revision"
+
+
+def test_transformers_provider_surfaces_torch_runtime_errors(monkeypatch):
+    transformers = ModuleType("transformers")
+    transformers.pipeline = lambda *args, **kwargs: None
+    torch = ModuleType("torch")
+
+    def fail_cuda_check():
+        raise RuntimeError("broken CUDA runtime")
+
+    torch.cuda = SimpleNamespace(is_available=fail_cuda_check)
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    with pytest.raises(RuntimeError, match="broken CUDA runtime"):
+        TransformersSynthesisProvider("test-model")._load_pipeline()

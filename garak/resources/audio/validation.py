@@ -35,6 +35,16 @@ def normalized_words(text: str) -> tuple[str, ...]:
     return tuple(_WORD_PATTERN.findall(text.casefold()))
 
 
+def _contains_word_sequence(
+    transcript: tuple[str, ...], phrase: tuple[str, ...]
+) -> bool:
+    phrase_length = len(phrase)
+    return any(
+        transcript[index : index + phrase_length] == phrase
+        for index in range(len(transcript) - phrase_length + 1)
+    )
+
+
 def _edit_distance(reference: tuple[str, ...], hypothesis: tuple[str, ...]) -> int:
     previous = list(range(len(hypothesis) + 1))
     for reference_index, reference_word in enumerate(reference, start=1):
@@ -94,8 +104,6 @@ def inspect_pcm16_wav(path: str | Path) -> dict:
         "sha256": hashlib.sha256(raw_file, usedforsecurity=False).hexdigest(),
         "byte_size": len(raw_file),
     }
-    if wav_path.suffix.lower() != ".wav":
-        return result | {"valid": False, "reason": "audio_format_not_wav"}
     try:
         with wave.open(str(wav_path), "rb") as wav_file:
             channels = wav_file.getnchannels()
@@ -111,6 +119,7 @@ def inspect_pcm16_wav(path: str | Path) -> dict:
             "detail": str(exc),
         }
     result |= {
+        "format": "wav",
         "sample_rate": sample_rate,
         "channels": channels,
         "sample_width_bytes": sample_width,
@@ -367,9 +376,13 @@ def validate_candidate(
     }
     required_phrases = candidate.get("required_transcript_phrases")
     if required_phrases is not None:
-        if not isinstance(required_phrases, (list, tuple)) or not all(
-            isinstance(phrase, str) and normalized_words(phrase)
-            for phrase in required_phrases
+        if (
+            not isinstance(required_phrases, (list, tuple))
+            or not required_phrases
+            or not all(
+                isinstance(phrase, str) and normalized_words(phrase)
+                for phrase in required_phrases
+            )
         ):
             validation["reason"] = "required_transcript_phrases_invalid"
             return manifest_candidate | {
@@ -377,11 +390,11 @@ def validate_candidate(
                 "transcript": transcript_record,
                 "validation": validation,
             }
-        transcript_tokens = " ".join(normalized_words(transcript.text))
+        transcript_words = normalized_words(transcript.text)
         missing_phrases = [
             phrase
             for phrase in required_phrases
-            if " ".join(normalized_words(phrase)) not in transcript_tokens
+            if not _contains_word_sequence(transcript_words, normalized_words(phrase))
         ]
         passed = not missing_phrases
         validation |= {
