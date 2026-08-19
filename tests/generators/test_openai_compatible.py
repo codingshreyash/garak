@@ -7,7 +7,6 @@ import respx
 import pytest
 import importlib
 import inspect
-
 from collections.abc import Iterable
 
 from garak.attempt import Message, Turn, Conversation
@@ -48,6 +47,11 @@ def compatible() -> Iterable[OpenAICompatible]:
                 if module_klass == RestGenerator:
                     continue
                 if hasattr(module_klass, "ENV_VAR"):
+                    input_modalities = getattr(module_klass, "modality", {}).get(
+                        "in", set()
+                    )
+                    if input_modalities != {"text"}:
+                        continue
                     class_instance = build_test_instance(module_klass)
                     if isinstance(class_instance, OpenAICompatible):
                         yield f"{namespace}.{klass_name}"
@@ -141,3 +145,15 @@ def test_openai_multiple_generations():
     assert (
         oai_klass.supports_multiple_generations == True
     ), "OpenAI access expected to correctly support multiple generations by default"
+
+
+def test_openai_compatible_normalises_mp3_audio_payload(tmp_path):
+    audio_path = tmp_path / "prompt.mp3"
+    audio_path.write_bytes(b"ID3")
+    prompt = Conversation([Turn("user", Message("listen", data_path=str(audio_path)))])
+
+    payload = OpenAICompatible._conversation_to_list(prompt)
+
+    assert (
+        payload[0]["content"][1]["input_audio"]["format"] == "mp3"
+    ), "normalises audio/mpeg MIME subtype to OpenAI's mp3 format"

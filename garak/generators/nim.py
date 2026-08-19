@@ -12,6 +12,7 @@ from garak import _config
 from garak.attempt import Message, Turn, Conversation
 from garak.exception import GarakException
 from garak.generators.openai import OpenAICompatible
+from garak.resources.audio.transforms import append_wav_silence
 
 
 class NVOpenAIChat(OpenAICompatible):
@@ -42,6 +43,7 @@ class NVOpenAIChat(OpenAICompatible):
         "temperature": 0.1,
         "top_p": 0.7,
         "top_k": 0,  # top_k is hard set to zero as of 24.04.30
+        "timeout": 60,
         "uri": "https://integrate.api.nvidia.com/v1/",
         "vary_seed_each_call": True,  # encourage variation when generations>1. not respected by all NIMs
         "vary_temp_each_call": True,  # encourage variation when generations>1. not respected by all NIMs
@@ -50,8 +52,6 @@ class NVOpenAIChat(OpenAICompatible):
     active = True
     supports_multiple_generations = False
     generator_family_name = "NIM"
-
-    timeout = 60
 
     def _load_unsafe(self):
         self.client = openai.OpenAI(base_url=self.uri, api_key=self.api_key)
@@ -234,6 +234,154 @@ class Vision(NVMultimodal):
     """
 
     modality = {"in": {"text", "image"}, "out": {"text"}}
+
+
+class NVVoiceChat(NVOpenAIChat):
+    """Speech-to-text target: send audio to an OpenAI-compatible S2S chat shim.
+
+    Sends base64-encoded WAV audio as an ``input_audio`` content block to a
+    ``/v1/chat/completions`` endpoint and reads the target's **text** transcript
+    from ``choices[0].message.content``.  Per garak's convention the generator's
+    output modality is text only -- the target (or its shim) is responsible for
+    returning a text transcript of whatever it spoke.  This generator does not
+    receive, save, or transcribe audio responses; doing so would make the test
+    measure the target *as interpreted by a transcription provider* rather than
+    the target itself.
+
+    Extends :class:`NVOpenAIChat` and reuses the OpenAI SDK client, so it follows
+    the same target-communication pattern as ``nim.Vision`` / ``nim.NVMultimodal``.
+    Point ``uri`` at the shim's ``/v1`` base URL, set ``--target_name`` to the
+    model the shim serves, and set ``NIM_API_KEY`` (leave blank if the endpoint
+    needs no auth).
+
+    Some targets need trailing silence at the end of the audio so they have time
+    to finish the response before the stream closes; ``trailing_silence_ms``
+    controls how much is appended (set to 0 to disable). ``extra_body`` requests
+    audio generation by default for shims that require it to trigger the S2S
+    pipeline, but any returned audio is ignored.
+    """
+
+    DEFAULT_PARAMS = NVOpenAIChat.DEFAULT_PARAMS | {
+        "audio_format": "wav",
+        "max_audio_bytes": 25_000_000,
+        "trailing_silence_ms": 2000,
+        "system_prompt": None,
+        "text_prompt": None,
+        "tools": None,
+        "tool_choice": None,
+        "extra_body": {"generate_audio": True},
+        "extra_headers": {},
+        "timeout": 120,
+        # sampling params suppressed; voice shims typically reject them
+        "suppressed_params": {
+            "n",
+            "frequency_penalty",
+            "presence_penalty",
+            "temperature",
+            "top_p",
+            "top_k",
+            "stop",
+            "seed",
+            "max_tokens",
+        },
+        "vary_seed_each_call": False,
+        "vary_temp_each_call": False,
+    }
+    active = True
+    supports_multiple_generations = False
+    generator_family_name = "NVVoiceChat"
+    modality = {"in": {"audio", "text"}, "out": {"text"}}
+    audio_formats = {"wav"}
+
+    def _audio_message(self, prompt: Conversation) -> Union[Message, None]:
+        if not isinstance(prompt, Conversation):
+            raise GarakException(
+                f"{self.__class__.__name__} expected a Conversation prompt."
+            )
+        for turn in reversed(prompt.turns):
+            msg = turn.content
+            if msg.data_path is not None or msg.data is not None:
+                return msg
+        return None
+
+    def _validate_audio_size(self, raw: bytes, context: str = "") -> None:
+        if len(raw) > self.max_audio_bytes:
+            raise GarakException(
+                f"{self.__class__.__name__} audio exceeds "
+                f"{self.max_audio_bytes} bytes{context}."
+            )
+
+    def _prepare_prompt(self, prompt: Conversation) -> Union[Conversation, None]:
+        """Validate audio and inline it (with optional trailing silence).
+
+        Returns a Conversation whose last audio-bearing message carries the
+        resolved WAV bytes inline so ``OpenAICompatible._conversation_to_list``
+        emits an ``input_audio`` content block. The generator-level
+        ``text_prompt`` overrides the message text when set. Non-audio prompts
+        pass through unchanged (and will be rejected downstream).
+        """
+        audio_msg = self._audio_message(prompt)
+        if audio_msg is None:
+            raise GarakException(
+                f"{self.__class__.__name__} expected a prompt containing audio data."
+            )
+
+        try:
+            raw = audio_msg.data
+        except FileNotFoundError as exc:
+            raise GarakException(
+                f"{self.__class__.__name__} audio file not found: "
+                f"{audio_msg.data_path}"
+            ) from exc
+
+        mime = (audio_msg.data_type or (None, None))[0] or f"audio/{self.audio_format}"
+        fmt = mime.split("/")[-1]
+        if fmt == "x-wav":
+            fmt = "wav"
+        if fmt not in self.audio_formats:
+            raise GarakException(
+                f"{self.__class__.__name__} expected one of "
+                f"{sorted(self.audio_formats)} audio formats: {mime}"
+            )
+
+        self._validate_audio_size(raw)
+
+        if self.trailing_silence_ms and self.trailing_silence_ms > 0:
+            try:
+                raw = append_wav_silence(raw, self.trailing_silence_ms)
+            except (TypeError, ValueError) as exc:
+                raise GarakException(
+                    f"{self.__class__.__name__} could not parse audio as WAV "
+                    f"to append trailing silence."
+                ) from exc
+            self._validate_audio_size(raw, " after appending trailing silence")
+
+        effective_text = (
+            self.text_prompt if self.text_prompt is not None else (audio_msg.text or "")
+        )
+        new_turns = []
+        replaced = False
+        for turn in prompt.turns:
+            if turn.content is audio_msg and not replaced:
+                new_msg = Message(
+                    text=effective_text,
+                    lang=audio_msg.lang,
+                    data_type=(f"audio/{fmt}", None),
+                )
+                new_msg.data = raw
+                new_turns.append(Turn(turn.role, new_msg))
+                replaced = True
+            else:
+                new_turns.append(turn)
+        if self.system_prompt is not None:
+            if not isinstance(self.system_prompt, str):
+                raise GarakException(
+                    f"{self.__class__.__name__} system_prompt must be a string."
+                )
+            if self.system_prompt:
+                new_turns.insert(0, Turn("system", Message(self.system_prompt)))
+
+        return Conversation(new_turns, notes=dict(prompt.notes))
 
 
 DEFAULT_CLASS = "NVOpenAIChat"
