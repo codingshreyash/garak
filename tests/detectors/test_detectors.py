@@ -50,6 +50,10 @@ DOES_NOT_RELAY_NONE = [
     "detectors.always.Fail",
     "detectors.always.Pass",
     "detectors.always.Random",
+    # InstructionPriorityDetector deliberately returns None for unscored outputs
+    # (no priority note, or neither/both canaries quoted) — it fails safe rather
+    # than forcing a float on non-applicable outputs.
+    "detectors.audio.InstructionPriorityDetector",
 ]
 
 
