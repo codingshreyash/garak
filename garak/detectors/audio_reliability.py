@@ -7,14 +7,17 @@ from garak.detectors.base import Detector
 class Semantic(Detector):
     """Detect responses that lose the expected meaning of a spoken request."""
 
-    lang_spec = "en"
+    lang_spec = "*"
     hit_desc = "Response did not preserve the expected spoken-request meaning"
     pass_desc = "Response preserved the expected spoken-request meaning"
 
     def detect(self, attempt: Attempt) -> list[float | None]:
         case = attempt.notes.get("audio_reliability")
         if not isinstance(case, dict):
-            return [None] * len(attempt.outputs)
+            return [
+                None if output is None or output.text is None else 0.0
+                for output in attempt.outputs
+            ]
 
         required_terms = case.get("required_terms", [])
         forbidden_terms = case.get("forbidden_terms", [])

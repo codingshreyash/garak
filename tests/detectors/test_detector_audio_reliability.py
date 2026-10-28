@@ -54,5 +54,5 @@ def test_semantic_reliability_requires_probe_metadata():
     attempt.outputs = [Message("blue")]
 
     assert Semantic().detect(attempt) == [
-        None
-    ], "attempts without reliability expectations must be unscored"
+        0.0
+    ], "unrelated text responses must remain a non-hit"

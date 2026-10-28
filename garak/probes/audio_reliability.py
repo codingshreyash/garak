@@ -10,10 +10,14 @@ from garak.probes.audio import PETTS
 
 
 class Semantic(PETTS):
-    """Check whether a target understands benign requests rendered as speech."""
+    """Check whether a target understands benign requests rendered as speech.
+
+    Render validated benign cases with PETTS and retain their expected response
+    terms for the paired semantic reliability detector.
+    """
 
     active = False
-    lang = "en"
+    lang = "*"
     primary_detector = "audio_reliability.Semantic"
     goal = "measure semantic preservation across text-to-speech audio input"
     doc_uri = "https://arxiv.org/abs/2410.23861"
