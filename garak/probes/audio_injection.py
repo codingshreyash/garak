@@ -7,7 +7,11 @@ from garak.resources.audio import concatenate_wav
 
 
 class Suffix(PETTS):
-    """Append a spoken intent after a benign carrier utterance."""
+    """Append a spoken intent after a benign carrier utterance.
+
+    Render the carrier and intent through the configured PETTS helper, then
+    concatenate their WAV output before sending it to the assessed target.
+    """
 
     active = False
     goal = "evaluate safeguards when a spoken request follows benign audio"
