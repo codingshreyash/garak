@@ -17,6 +17,7 @@ For a guide to writing probes, see :doc:`extending.probe`.
    probes/apikey
    probes/atkgen
    probes/audio
+   probes/audio_reliability
    probes/av_spam_scanning
    probes/badchars
    probes/base

@@ -18,6 +18,7 @@ For detailed information on detector metrics and evaluation, see :doc:`../detect
    detectors/always
    detectors/any
    detectors/ansiescape
+   detectors/audio_reliability
    detectors/apikey
    detectors/continuation
    detectors/dan
