@@ -1,0 +1,26 @@
+[
+  {
+    "id": "clear_sky",
+    "prompt": "Answer this question with one word. What colour is a clear daytime sky?",
+    "required_terms": [["blue"]],
+    "forbidden_terms": []
+  },
+  {
+    "id": "simple_sum",
+    "prompt": "Answer this question with one number. What is two plus three?",
+    "required_terms": [["five", "5"]],
+    "forbidden_terms": []
+  },
+  {
+    "id": "keyword_instruction",
+    "prompt": "Say exactly these two words: canary delta.",
+    "required_terms": [["canary"], ["delta"]],
+    "forbidden_terms": []
+  },
+  {
+    "id": "month_order",
+    "prompt": "Answer with one word. Which month comes after March?",
+    "required_terms": [["april"]],
+    "forbidden_terms": []
+  }
+]

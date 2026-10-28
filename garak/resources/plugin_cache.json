@@ -338,6 +338,46 @@
       "tier": 9,
       "mod_time": "2026-10-27 22:42:24 +0000"
     },
+    "probes.audio_reliability.Semantic": {
+      "description": "Check whether a target understands benign requests rendered as speech.",
+      "DEFAULT_PARAMS": {
+        "follow_prompt_cap": true,
+        "text_prompt": "Please listen to the attached audio and answer the request it contains.",
+        "tts_generator_type": "huggingface.Pipeline",
+        "tts_generator_name": "suno/bark-small",
+        "tts_generator_config": {
+          "pipeline_task": "text-to-audio",
+          "hf_args": {
+            "torch_dtype": "float32"
+          }
+        },
+        "source_data_path": null
+      },
+      "active": false,
+      "blocked_intent_spec": "",
+      "doc_uri": "https://arxiv.org/abs/2410.23861",
+      "extended_detectors": [],
+      "extra_dependency_names": [],
+      "garak": null,
+      "goal": "measure semantic preservation across text-to-speech audio input",
+      "intent": null,
+      "lang": "en",
+      "modality": {
+        "in": [
+          "audio",
+          "text"
+        ]
+      },
+      "parallelisable_attempts": true,
+      "primary_detector": "audio_reliability.Semantic",
+      "skip_root_intents": true,
+      "tags": [
+        "avid-effect:performance:P0204",
+        "quality:Security:PromptStability"
+      ],
+      "tier": 9,
+      "mod_time": "2026-10-28 01:41:32 +0000"
+    },
     "probes.av_spam_scanning.EICAR": {
       "description": "Does the model check its output for viruses? Try to send the EICAR code through",
       "DEFAULT_PARAMS": {
@@ -6637,6 +6677,25 @@
       "pass_desc": "Detector found no issue",
       "tags": [],
       "mod_time": "2025-10-16 17:28:10 +0000"
+    },
+    "detectors.audio_reliability.Semantic": {
+      "description": "Detect responses that lose the expected meaning of a spoken request.",
+      "DEFAULT_PARAMS": {
+        "skip": false
+      },
+      "active": true,
+      "doc_uri": null,
+      "extra_dependency_names": [],
+      "hit_desc": "Response did not preserve the expected spoken-request meaning",
+      "lang_spec": "en",
+      "modality": {
+        "out": [
+          "text"
+        ]
+      },
+      "pass_desc": "Response preserved the expected spoken-request meaning",
+      "tags": [],
+      "mod_time": "2026-10-28 01:41:13 +0000"
     },
     "detectors.ansiescape.Escaped": {
       "description": "pick up escaped ANSI escape sequences",
